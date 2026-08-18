@@ -11,9 +11,10 @@ from starlette.concurrency import run_in_threadpool
 from .config import Settings, get_settings
 from .database import get_session
 from .ingestion import DatasetParseError, parse_dataset
-from .models import ColumnProfile, Dataset, DatasetStatus
+from .models import ColumnProfile, Dataset, DatasetStatus, Finding
 from .normalization import write_snapshot
 from .profiling import profile_dataset
+from .quality import QualityAssessmentError, structural_findings
 from .schemas import DatasetDetailResponse, DatasetSummaryResponse
 from .storage import delete_storage_key, persist_original
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 def _load_dataset(session: Session, dataset_id: uuid.UUID) -> Dataset:
     dataset = session.scalar(
         select(Dataset)
-        .options(selectinload(Dataset.column_profiles))
+        .options(selectinload(Dataset.column_profiles), selectinload(Dataset.findings))
         .where(Dataset.id == dataset_id)
     )
     if not dataset:
@@ -92,6 +93,9 @@ async def upload_dataset(
             write_snapshot, parsed, config.storage_root, dataset.id
         )
         profile = await run_in_threadpool(profile_dataset, parsed, config.preview_rows)
+        finding_results = await run_in_threadpool(
+            structural_findings, parsed, config.max_findings
+        )
         dataset.original_file_key = original_key
         dataset.snapshot_key = snapshot_key
         dataset.worksheet_name = parsed.worksheet_name
@@ -101,6 +105,11 @@ async def upload_dataset(
         dataset.preview = profile.preview
         dataset.column_profiles = [
             ColumnProfile(**result.__dict__) for result in profile.columns
+        ]
+        dataset.finding_count = len(finding_results)
+        dataset.findings = [
+            Finding(position=position, **result.__dict__)
+            for position, result in enumerate(finding_results)
         ]
         dataset.status = DatasetStatus.COMPLETED
         dataset.completed_at = datetime.now(timezone.utc)
@@ -113,7 +122,7 @@ async def upload_dataset(
         delete_storage_key(config.storage_root, original_key)
         delete_storage_key(config.storage_root, snapshot_key)
         raise
-    except DatasetParseError as exc:
+    except (DatasetParseError, QualityAssessmentError) as exc:
         dataset.status = DatasetStatus.FAILED
         dataset.failure_message = str(exc)
         session.commit()

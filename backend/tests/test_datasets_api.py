@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.datasets as datasets_module
+from app.quality import QualityAssessmentError
 
 
 def test_config_exposes_upload_limit(client: TestClient) -> None:
@@ -25,6 +26,8 @@ def test_upload_list_and_detail_dataset(client: TestClient) -> None:
     uploaded = response.json()
     assert uploaded["status"] == "COMPLETED"
     assert (uploaded["row_count"], uploaded["column_count"]) == (2, 2)
+    assert uploaded["finding_count"] == 0
+    assert uploaded["findings"] == []
     assert "original_file_key" not in uploaded
 
     history = client.get("/api/datasets").json()
@@ -34,6 +37,54 @@ def test_upload_list_and_detail_dataset(client: TestClient) -> None:
     assert detail.status_code == 200
     assert detail.json()["preview"][0] == {"_source_row": 2, "nama": "ANI", "jumlah": "0"}
     assert detail.json()["column_profiles"][1]["inferred_type"] == "integer"
+
+
+def test_upload_runs_structural_quality_checks(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasets",
+        files={
+            "file": (
+                "quality.csv",
+                b"nama,catatan\nANI,N/A\nAni,-\n,0\nANI,N/A\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["finding_count"] == 4
+    assert body["finding_summary"]["by_issue_type"] == {
+        "DUPLICATE": 1,
+        "MISSING_VALUE": 1,
+        "INVALID_PLACEHOLDER": 1,
+        "INVALID_CASE": 1,
+    }
+    assert body["finding_summary"]["by_severity"] == {"HIGH": 2, "MEDIUM": 2}
+    assert [(item["row"], item["issue_type"]) for item in body["findings"]] == [
+        (3, "INVALID_CASE"),
+        (3, "INVALID_PLACEHOLDER"),
+        (4, "MISSING_VALUE"),
+        (5, "DUPLICATE"),
+    ]
+    assert "original_file_key" not in str(body)
+    assert client.get("/api/datasets").json()[0]["finding_count"] == 4
+
+
+def test_upload_xlsx_runs_structural_quality_checks(client: TestClient) -> None:
+    workbook = Workbook()
+    workbook.active.append(["nama"])
+    workbook.active.append(["Ani"])
+    content = BytesIO()
+    workbook.save(content)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("quality.xlsx", content.getvalue(), "application/octet-stream")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["findings"][0]["issue_type"] == "INVALID_CASE"
 
 
 def test_invalid_upload_is_rejected_without_internal_paths(client: TestClient) -> None:
@@ -99,6 +150,49 @@ def test_unexpected_processing_failure_is_safe_and_cleans_artifacts(
     assert response.json()["detail"]["message"] == "Dataset tidak dapat diproses."
     assert client.get("/api/datasets").json()[0]["status"] == "FAILED"
     assert list((tmp_path / "storage" / "originals").glob("*")) == []
+
+
+def test_quality_failure_is_safe_and_cleans_artifacts(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    def fail_quality(*_args, **_kwargs):
+        raise RuntimeError("quality detail must stay private")
+
+    monkeypatch.setattr(datasets_module, "structural_findings", fail_quality)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("contoh.csv", b"nama\nANI\n", "text/csv")},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["message"] == "Dataset tidak dapat diproses."
+    assert client.get("/api/datasets").json()[0]["status"] == "FAILED"
+    assert list((tmp_path / "storage" / "originals").glob("*")) == []
+    assert list((tmp_path / "storage" / "snapshots").glob("*")) == []
+
+
+def test_quality_limit_returns_actionable_422_and_cleans_artifacts(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    def reject_findings(_parsed, max_findings):
+        assert max_findings == 10_000
+        raise QualityAssessmentError(
+            "Dataset menghasilkan lebih dari 10000 temuan kualitas. Kurangi ukuran dataset."
+        )
+
+    monkeypatch.setattr(datasets_module, "structural_findings", reject_findings)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("contoh.csv", b"nama\nAni\n", "text/csv")},
+    )
+
+    assert response.status_code == 422
+    assert "kurangi ukuran dataset" in response.json()["detail"]["message"].lower()
+    assert client.get("/api/datasets").json()[0]["status"] == "FAILED"
+    assert list((tmp_path / "storage" / "originals").glob("*")) == []
+    assert list((tmp_path / "storage" / "snapshots").glob("*")) == []
 
 
 def test_upload_rejects_an_unsafe_filename_before_persistence(client: TestClient) -> None:

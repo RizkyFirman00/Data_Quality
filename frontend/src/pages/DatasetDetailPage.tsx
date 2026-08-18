@@ -6,12 +6,13 @@ import type { DatasetDetail } from "../types";
 const value = (item: unknown) => item === null ? "NULL" : item === "" ? '""' : typeof item === "string" && !item.trim() ? "␠".repeat(item.length) : typeof item === "object" ? JSON.stringify(item) : String(item);
 const date = (item: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item));
 const label: Record<string, string> = { integer: "Bilangan bulat", decimal: "Desimal", text: "Teks", date: "Tanggal", boolean: "Boolean", unknown: "Belum diketahui", identifier: "Identifier", numeric: "Numerik", categorical: "Kategorikal", geographic: "Geografis" };
+const issueLabel = { DUPLICATE: "Duplikat penuh", MISSING_VALUE: "Nilai kosong", INVALID_PLACEHOLDER: "Placeholder tidak valid", INVALID_CASE: "Bukan uppercase" };
 
 export default function DatasetDetailPage() {
   const { datasetId = "" } = useParams();
   const [dataset, setDataset] = useState<DatasetDetail | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
-  const [tab, setTab] = useState<"preview" | "profiles">("preview");
+  const [tab, setTab] = useState<"preview" | "profiles" | "findings">("preview");
 
   useEffect(() => { getDataset(datasetId).then(setDataset).catch((reason) => setError(reason instanceof ApiError ? reason : new ApiError("Dataset tidak dapat dimuat."))); }, [datasetId]);
 
@@ -24,23 +25,24 @@ export default function DatasetDetailPage() {
   return (
     <main className="page detail-page">
       <Link className="back-link" to="/datasets">← Kembali ke dataset</Link>
-      <div className="detail-title"><div><span className="eyebrow">Profil dataset</span><h1>{dataset.original_filename}</h1><p>{dataset.worksheet_name ? `Worksheet: ${dataset.worksheet_name}` : "Sumber: unggahan file"}</p><p>Diunggah: {date(dataset.created_at)} · Selesai: {date(dataset.completed_at!)}</p></div><span className="status completed">Selesai diprofil</span></div>
+      <div className="detail-title"><div><span className="eyebrow">Profil &amp; kualitas struktural</span><h1>{dataset.original_filename}</h1><p>{dataset.worksheet_name ? `Worksheet: ${dataset.worksheet_name}` : "Sumber: unggahan file"}</p><p>Diunggah: {date(dataset.created_at)} · Selesai: {date(dataset.completed_at!)}</p></div><span className="status completed">Selesai diperiksa</span></div>
       <section className="facts" aria-label="Ringkasan dataset">
         <div><span>Baris</span><strong>{dataset.row_count.toLocaleString("id-ID")}</strong></div>
         <div><span>Kolom</span><strong>{dataset.column_count}</strong></div>
         <div><span>Format</span><strong className="small-value">{dataset.file_type.toUpperCase()}</strong></div>
-        <div><span>Duplikat penuh</span><strong>{dataset.duplicate_row_count}</strong><small>Profil, bukan finding</small></div>
+        <div><span>Total temuan</span><strong>{dataset.finding_count}</strong><small>{dataset.finding_summary.by_severity.HIGH || 0} severity tinggi</small></div>
       </section>
       <section className="ledger detail-ledger">
         <div className="tabs" role="tablist" aria-label="Detail dataset">
           <button role="tab" aria-selected={tab === "preview"} onClick={() => setTab("preview")}>Preview data <span>{dataset.preview.length}</span></button>
           <button role="tab" aria-selected={tab === "profiles"} onClick={() => setTab("profiles")}>Profil kolom <span>{dataset.column_profiles.length}</span></button>
+          <button role="tab" aria-selected={tab === "findings"} onClick={() => setTab("findings")}>Temuan struktural <span>{dataset.finding_count}</span></button>
         </div>
         {tab === "preview" ? (
           <div className="table-wrap data-preview" role="tabpanel">
             <table><thead><tr><th className="source-column">BARIS</th>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{dataset.preview.map((row) => <tr key={String(row._source_row)}><td className="source-column">{String(row._source_row).padStart(3, "0")}</td>{columns.map((column) => <td key={column} className={row[column] === null ? "null-value" : ""}>{value(row[column])}</td>)}</tr>)}</tbody></table>
           </div>
-        ) : (
+        ) : tab === "profiles" ? (
           <div className="profile-list" role="tabpanel">
             {dataset.column_profiles.map((column) => (
               <article className="profile-row" key={column.position}>
@@ -51,9 +53,33 @@ export default function DatasetDetailPage() {
               </article>
             ))}
           </div>
+        ) : (
+          <div className="findings-panel" role="tabpanel">
+            <div className="finding-summary" aria-label="Ringkasan temuan struktural">
+              {Object.entries(issueLabel).map(([issue, text]) => <div key={issue}><span>{text}</span><strong>{dataset.finding_summary.by_issue_type[issue as keyof typeof issueLabel] || 0}</strong></div>)}
+              <div className="severity-total high"><span>Severity tinggi</span><strong>{dataset.finding_summary.by_severity.HIGH || 0}</strong></div>
+              <div className="severity-total medium"><span>Severity medium</span><strong>{dataset.finding_summary.by_severity.MEDIUM || 0}</strong></div>
+            </div>
+            {dataset.findings.length ? (
+              <div className="table-wrap findings-table">
+                <table>
+                  <thead><tr><th>Severity</th><th>Baris</th><th>Kolom</th><th>Isu</th><th>Nilai saat ini</th><th>Evidence</th><th>Rekomendasi</th></tr></thead>
+                  <tbody>{dataset.findings.map((finding) => <tr key={finding.id}>
+                    <td><span className={`severity ${finding.severity.toLowerCase()}`}>{finding.severity === "HIGH" ? "Tinggi" : "Medium"}</span></td>
+                    <td className="tabular">{finding.row}</td>
+                    <td>{finding.column || "Seluruh baris"}</td>
+                    <td><strong>{issueLabel[finding.issue_type]}</strong></td>
+                    <td className="finding-value">{value(finding.original_value)}</td>
+                    <td>{finding.evidence}</td>
+                    <td>{finding.recommendation}</td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
+            ) : <div className="empty-state compact"><span className="empty-glyph" aria-hidden="true">✓</span><h3>Tidak ada temuan struktural</h3><p>Empat pemeriksaan Phase 2 tidak menemukan masalah pada dataset ini.</p></div>}
+          </div>
         )}
       </section>
-      <p className="phase-boundary"><strong>Catatan fase:</strong> hasil di atas adalah profil struktur, belum merupakan penilaian kualitas atau rekomendasi perbaikan.</p>
+      <p className="phase-boundary"><strong>Catatan reviewer:</strong> temuan adalah evidence dan rekomendasi untuk diverifikasi. Dataset sumber tidak diubah.</p>
     </main>
   );
 }

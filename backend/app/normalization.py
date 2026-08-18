@@ -18,6 +18,18 @@ def json_value(value: object) -> object:
     return value
 
 
+def json_key(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=lambda item: {
+            "__data_quality_type__": type(item).__qualname__,
+            "value": str(item),
+        },
+    )
+
+
 def write_snapshot(parsed: ParsedDataset, root: Path, dataset_id: uuid.UUID) -> str:
     key = f"snapshots/{dataset_id}.ndjson.gz"
     target = resolve_storage_key(root, key)

@@ -17,6 +17,18 @@ def main() -> None:
             dataset = response.json()
             assert (dataset["row_count"], dataset["column_count"]) == (5, 8)
             assert dataset["duplicate_row_count"] == 1
+            assert dataset["finding_count"] == 9
+            assert set(dataset["finding_summary"]["by_issue_type"]) == {
+                "DUPLICATE",
+                "MISSING_VALUE",
+                "INVALID_PLACEHOLDER",
+                "INVALID_CASE",
+            }
+            assert all(
+                finding["row"] and finding["evidence"] and finding["recommendation"]
+                for finding in dataset["findings"]
+            )
+            assert "original_file_key" not in str(dataset)
             assert dataset["preview"][0]["_source_row"] == (2 if name.endswith(".csv") else 3)
             profiles = {item["original_name"]: item for item in dataset["column_profiles"]}
             assert profiles["npsn"]["candidate_role"] == "identifier"

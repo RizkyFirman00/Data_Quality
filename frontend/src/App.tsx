@@ -30,8 +30,8 @@ export default function App() {
           </NavLink>
         </nav>
         <div className="phase-note">
-          <span>FASE 01</span>
-          <p>Ingesti &amp; profiling</p>
+          <span>FASE 02</span>
+          <p>Profiling &amp; kualitas struktural</p>
         </div>
       </aside>
       <div className="workspace">

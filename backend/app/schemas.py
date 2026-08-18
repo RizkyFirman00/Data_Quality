@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -21,6 +22,28 @@ class ColumnProfileResponse(BaseModel):
     distribution: list[dict[str, object]] | None
 
 
+class FindingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    row: int
+    column: str | None
+    issue_type: str
+    severity: str
+    original_value: Any
+    expected_value: Any | None
+    evidence: str
+    recommendation: str
+    confidence: float
+    detector: str
+    status: str
+
+
+class FindingSummaryResponse(BaseModel):
+    by_issue_type: dict[str, int]
+    by_severity: dict[str, int]
+
+
 class DatasetSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,6 +56,7 @@ class DatasetSummaryResponse(BaseModel):
     row_count: int
     column_count: int
     duplicate_row_count: int
+    finding_count: int
     failure_message: str | None
     created_at: datetime
     completed_at: datetime | None
@@ -41,3 +65,5 @@ class DatasetSummaryResponse(BaseModel):
 class DatasetDetailResponse(DatasetSummaryResponse):
     preview: list[dict[str, object]]
     column_profiles: list[ColumnProfileResponse]
+    finding_summary: FindingSummaryResponse
+    findings: list[FindingResponse]

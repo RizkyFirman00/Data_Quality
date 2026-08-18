@@ -14,6 +14,7 @@ class Settings:
     max_dataset_rows: int = int(os.getenv("MAX_DATASET_ROWS", "100000"))
     max_dataset_columns: int = int(os.getenv("MAX_DATASET_COLUMNS", "1000"))
     max_dataset_cells: int = int(os.getenv("MAX_DATASET_CELLS", "2000000"))
+    max_findings: int = int(os.getenv("MAX_FINDINGS", "10000"))
     preview_rows: int = int(os.getenv("PREVIEW_ROWS", "50"))
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()

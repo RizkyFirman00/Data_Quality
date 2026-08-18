@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from app.models import Base, ColumnProfile, Dataset, DatasetStatus
+from app.models import Base, ColumnProfile, Dataset, DatasetStatus, Finding
 
 
 def test_dataset_profiles_are_persisted_and_deleted_together() -> None:
@@ -40,7 +40,51 @@ def test_dataset_profiles_are_persisted_and_deleted_together() -> None:
     with Session(engine) as session:
         saved = session.get(Dataset, dataset_id)
         assert saved is not None
+        assert saved.finding_count == 0
         assert saved.column_profiles[0].sample_values == ["ANI", "BUDI"]
         session.delete(saved)
         session.commit()
         assert session.scalars(select(ColumnProfile)).all() == []
+
+
+def test_dataset_findings_are_persisted_and_deleted_together() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        dataset = Dataset(
+            original_filename="contoh.csv",
+            source_type="file_upload",
+            file_type="csv",
+            status=DatasetStatus.COMPLETED,
+            finding_count=1,
+        )
+        dataset.findings.append(
+            Finding(
+                position=0,
+                row=2,
+                column="nama",
+                issue_type="INVALID_CASE",
+                severity="MEDIUM",
+                original_value="Ani",
+                expected_value="ANI",
+                evidence="Belum uppercase.",
+                recommendation="Gunakan ANI.",
+                confidence=1.0,
+                detector="deterministic:structural-v1",
+                status="OPEN",
+            )
+        )
+        session.add(dataset)
+        session.commit()
+        dataset_id = dataset.id
+
+    with Session(engine) as session:
+        saved = session.get(Dataset, dataset_id)
+        assert saved is not None
+        assert saved.finding_count == 1
+        assert saved.findings[0].dataset is saved
+        assert saved.findings[0].status == "OPEN"
+        session.delete(saved)
+        session.commit()
+        assert session.scalars(select(Finding)).all() == []

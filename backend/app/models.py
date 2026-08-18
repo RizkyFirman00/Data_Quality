@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -37,6 +37,7 @@ class Dataset(Base):
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     column_count: Mapped[int] = mapped_column(Integer, default=0)
     duplicate_row_count: Mapped[int] = mapped_column(Integer, default=0)
+    finding_count: Mapped[int] = mapped_column(Integer, default=0)
     preview: Mapped[list[dict[str, object]]] = mapped_column(JsonType, default=list)
     failure_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -46,6 +47,20 @@ class Dataset(Base):
         cascade="all, delete-orphan",
         order_by="ColumnProfile.position",
     )
+    findings: Mapped[list["Finding"]] = relationship(
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        order_by=lambda: Finding.position,
+    )
+
+    @property
+    def finding_summary(self) -> dict[str, dict[str, int]]:
+        by_issue_type: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+        for finding in self.findings:
+            by_issue_type[finding.issue_type] = by_issue_type.get(finding.issue_type, 0) + 1
+            by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+        return {"by_issue_type": by_issue_type, "by_severity": by_severity}
 
 
 class ColumnProfile(Base):
@@ -66,3 +81,26 @@ class ColumnProfile(Base):
     sample_values: Mapped[list[object]] = mapped_column(JsonType, default=list)
     distribution: Mapped[list[dict[str, object]] | None] = mapped_column(JsonType)
     dataset: Mapped[Dataset] = relationship(back_populates="column_profiles")
+
+
+class Finding(Base):
+    __tablename__ = "findings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("datasets.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    row: Mapped[int] = mapped_column(Integer)
+    column: Mapped[str | None] = mapped_column(String(255))
+    issue_type: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(16))
+    original_value: Mapped[object] = mapped_column(JsonType)
+    expected_value: Mapped[object | None] = mapped_column(JsonType)
+    evidence: Mapped[str] = mapped_column(Text)
+    recommendation: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float)
+    detector: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="OPEN")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    dataset: Mapped[Dataset] = relationship(back_populates="findings")

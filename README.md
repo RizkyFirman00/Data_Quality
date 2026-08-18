@@ -1,8 +1,16 @@
 # Intelligent Data Quality Assessment
 
-Phase 1 adalah fondasi ingest dan profiling dataset untuk reviewer data Pemerintah Provinsi DKI Jakarta. Aplikasi menerima CSV/XLSX, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan preview dan karakteristik kolom.
+Phase 2 menyediakan ingest, profiling, dan pemeriksaan kualitas struktural deterministik untuk reviewer data Pemerintah Provinsi DKI Jakarta. Aplikasi menerima CSV/XLSX, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan preview, karakteristik kolom, evidence, dan rekomendasi.
 
-Phase 1 belum memberikan verdict kualitas, findings, rekomendasi, validasi referensi DKI, atau koreksi data.
+Aplikasi tidak mengubah dataset sumber dan belum memberikan verdict lulus/gagal. Reviewer tetap menjadi pengambil keputusan.
+
+## Pemeriksaan Phase 2
+
+- Duplikat hanya untuk baris lengkap yang sama; kemunculan pertama menjadi referensi.
+- `NULL`, string kosong, dan whitespace-only adalah `MISSING_VALUE`.
+- String `-` adalah `INVALID_PLACEHOLDER`.
+- Semua nilai string yang mengandung huruf harus uppercase; rekomendasi tidak diterapkan otomatis.
+- `N/A`, angka `0`, dan string `"0"` tetap valid dan bukan missing.
 
 ## Menjalankan lokal
 
@@ -64,16 +72,18 @@ docker compose exec backend env SAMPLES_DIR=/samples python scripts/smoke_test.p
 | `MAX_DATASET_ROWS` | `100000` | Batas baris data per dataset |
 | `MAX_DATASET_COLUMNS` | `1000` | Batas kolom per dataset |
 | `MAX_DATASET_CELLS` | `2000000` | Batas gabungan sel untuk mencegah amplifikasi memori |
+| `MAX_FINDINGS` | `10000` | Batas temuan kualitas; dataset ditolak jika terlampaui |
 | `PREVIEW_ROWS` | `50` | Batas record yang dikirim ke browser |
 | `CORS_ORIGINS` | `http://localhost:5173` | Origin frontend yang diizinkan |
 | `VITE_API_URL` | `http://localhost:8000/api` | Base URL API publik |
 
 File pengguna disimpan di `storage/originals/` dengan nama UUID. Snapshot kerja berada di `storage/snapshots/`. Nama file pengguna tidak pernah dipakai sebagai path penyimpanan.
 
-## Batas Phase 1
+## Batas Phase 2
 
 - Format resmi: CSV dan XLSX; XLS lama belum didukung.
 - Pemrosesan masih sinkron karena target awal kecil. Queue ditambahkan hanya bila pengukuran menunjukkan kebutuhan.
 - Penyimpanan lokal cocok untuk satu host. Object storage diperlukan sebelum menjalankan banyak instance.
 - Belum ada autentikasi; gunakan hanya dalam lingkungan lokal/internal terkontrol.
-- `N/A` dan `0` dipertahankan sebagai nilai. Profiling bukan quality finding.
+- Belum ada validasi tanggal, koordinat, kalkulasi, statistik, referensi DKI, typo/LLM, keputusan reviewer, filter findings, atau export laporan.
+- Findings Phase 2 bersifat read-only dan harus diverifikasi reviewer.

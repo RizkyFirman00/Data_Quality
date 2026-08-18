@@ -1,11 +1,10 @@
-import json
 import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 
 from .ingestion import ParsedColumn, ParsedDataset
-from .normalization import json_record, json_value
+from .normalization import json_key, json_record, json_value
 
 
 @dataclass(frozen=True)
@@ -33,10 +32,6 @@ class DatasetProfile:
 
 def _empty(value: object) -> bool:
     return isinstance(value, str) and not value.strip()
-
-
-def _json_key(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _is_date(value: object) -> bool:
@@ -109,11 +104,11 @@ def _column_profile(
 ) -> ColumnProfileResult:
     raw_values = [record.get(column.key) for record in records]
     nonempty = [value for value in raw_values if value is not None and not _empty(value)]
-    keyed = {_json_key(value): value for value in raw_values if value is not None}
-    samples = [json_value(value) for value in list({_json_key(value): value for value in nonempty}.values())[:5]]
+    keyed = {json_key(value): value for value in raw_values if value is not None}
+    samples = [json_value(value) for value in list({json_key(value): value for value in nonempty}.values())[:5]]
     inferred_type = _infer_type(column.display_name, nonempty)
-    counts = Counter(_json_key(value) for value in nonempty)
-    originals = {_json_key(value): value for value in nonempty}
+    counts = Counter(json_key(value) for value in nonempty)
+    originals = {json_key(value): value for value in nonempty}
     distribution = None
     if counts and (len(counts) <= 50 or len(counts) / len(nonempty) <= 0.2):
         distribution = [
@@ -135,7 +130,7 @@ def _column_profile(
 
 
 def profile_dataset(parsed: ParsedDataset, preview_rows: int = 50) -> DatasetProfile:
-    row_keys = [_json_key(record) for record in parsed.records]
+    row_keys = [json_key(record) for record in parsed.records]
     duplicate_count = sum(count - 1 for count in Counter(row_keys).values())
     return DatasetProfile(
         row_count=len(parsed.records),

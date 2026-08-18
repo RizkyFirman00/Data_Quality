@@ -42,13 +42,14 @@ export default function DatasetsPage() {
         {datasets && datasets.length > 0 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Dataset</th><th>Format</th><th>Dimensi</th><th>Diunggah</th><th>Status</th><th><span className="sr-only">Buka</span></th></tr></thead>
+              <thead><tr><th>Dataset</th><th>Format</th><th>Dimensi</th><th>Temuan</th><th>Diunggah</th><th>Status</th><th><span className="sr-only">Buka</span></th></tr></thead>
               <tbody>
                 {datasets.map((item) => (
                   <tr key={item.id}>
                     <td><Link className="dataset-name" to={`/datasets/${item.id}`}>{item.original_filename}</Link><small>File upload</small></td>
                     <td><span className="file-type">{item.file_type.toUpperCase()}</span></td>
                     <td className="tabular">{item.row_count.toLocaleString("id-ID")} × {item.column_count}</td>
+                    <td className="tabular"><strong>{item.finding_count.toLocaleString("id-ID")}</strong></td>
                     <td>{date(item.created_at)}</td>
                     <td><span className={`status ${item.status.toLowerCase()}`}>{item.status === "COMPLETED" ? "Selesai" : item.status === "FAILED" ? "Gagal" : "Diproses"}</span></td>
                     <td><Link className="row-action" aria-label={`Buka ${item.original_filename}`} to={`/datasets/${item.id}`}>→</Link></td>
