@@ -153,7 +153,24 @@ def _parse_xlsx(
                 if len(records) >= max_rows:
                     raise DatasetParseError(f"Dataset melebihi batas {max_rows} baris data.")
                 records.append(
-                    {column.key: value for column, value in zip(columns, row, strict=True)}
+                    {
+                        column.key: (
+                            value
+                            if value is not None or formula_cell.data_type != "f"
+                            else (
+                                formula_cell.value
+                                if isinstance(formula_cell.value, str)
+                                else getattr(
+                                    formula_cell.value,
+                                    "text",
+                                    str(formula_cell.value),
+                                )
+                            )
+                        )
+                        for column, value, formula_cell in zip(
+                            columns, row, formula_row, strict=True
+                        )
+                    }
                 )
                 source_rows.append(row_number)
             if columns is None:

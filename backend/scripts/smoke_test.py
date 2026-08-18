@@ -76,6 +76,38 @@ def main() -> None:
             assert "original_file_key" not in str(dataset)
             print(f"OK {name}: {dataset['id']}")
 
+        for name in ("sample_date_quality.csv", "sample_date_quality.xlsx"):
+            path = samples / name
+            with path.open("rb") as handle:
+                response = client.post("/datasets", files={"file": (name, handle)})
+            response.raise_for_status()
+            dataset = response.json()
+            assert dataset["finding_summary"]["by_issue_type"]["INVALID_DATE_FORMAT"] == 8
+            assert all(
+                finding["detector"] == "deterministic:date-v1"
+                for finding in dataset["findings"]
+                if finding["issue_type"] == "INVALID_DATE_FORMAT"
+            )
+            print(f"OK {name}: {dataset['id']}")
+
+        for name in ("sample_numeric_quality.csv", "sample_numeric_quality.xlsx"):
+            path = samples / name
+            with path.open("rb") as handle:
+                response = client.post("/datasets", files={"file": (name, handle)})
+            response.raise_for_status()
+            dataset = response.json()
+            assert dataset["finding_summary"]["by_issue_type"] == {"FORMAT_ERROR": 8}
+            assert all(
+                finding["detector"] == "deterministic:numeric-v1"
+                for finding in dataset["findings"]
+            )
+            assert all(
+                profile["candidate_role"] == "numeric"
+                for profile in dataset["column_profiles"]
+            )
+            assert "original_file_key" not in str(dataset)
+            print(f"OK {name}: {dataset['id']}")
+
 
 if __name__ == "__main__":
     main()

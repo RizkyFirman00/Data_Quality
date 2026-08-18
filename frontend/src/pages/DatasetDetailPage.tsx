@@ -6,7 +6,7 @@ import type { DatasetDetail, FindingIssueType } from "../types";
 const value = (item: unknown) => item === null ? "NULL" : item === "" ? '""' : typeof item === "string" && !item.trim() ? "␠".repeat(item.length) : typeof item === "object" ? JSON.stringify(item) : String(item);
 const date = (item: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item));
 const label: Record<string, string> = { integer: "Bilangan bulat", decimal: "Desimal", text: "Teks", date: "Tanggal", boolean: "Boolean", unknown: "Belum diketahui", identifier: "Identifier", numeric: "Numerik", categorical: "Kategorikal", geographic: "Geografis", administrative_city: "Kota/Kabupaten administratif", administrative_district: "Kecamatan administratif", administrative_village: "Kelurahan administratif" };
-const issueLabel: Record<FindingIssueType, string> = { DUPLICATE: "Duplikat penuh", MISSING_VALUE: "Nilai kosong", INVALID_PLACEHOLDER: "Placeholder tidak valid", INVALID_CASE: "Bukan uppercase", INVALID_REFERENCE: "Referensi tidak valid", INVALID_HIERARCHY: "Hierarki tidak valid" };
+const issueLabel: Record<FindingIssueType, string> = { DUPLICATE: "Duplikat penuh", MISSING_VALUE: "Nilai kosong", INVALID_PLACEHOLDER: "Placeholder tidak valid", INVALID_CASE: "Bukan uppercase", INVALID_REFERENCE: "Referensi tidak valid", INVALID_HIERARCHY: "Hierarki tidak valid", INVALID_DATE_FORMAT: "Format tanggal tidak valid", FORMAT_ERROR: "Format numerik tidak valid" };
 
 export default function DatasetDetailPage() {
   const { datasetId = "" } = useParams();
@@ -63,19 +63,20 @@ export default function DatasetDetailPage() {
             {dataset.findings.length ? (
               <div className="table-wrap findings-table">
                 <table>
-                  <thead><tr><th>Severity</th><th>Baris</th><th>Kolom</th><th>Isu</th><th>Nilai saat ini</th><th>Evidence</th><th>Rekomendasi</th></tr></thead>
+                  <thead><tr><th>Severity</th><th>Baris</th><th>Kolom</th><th>Isu</th><th>Nilai saat ini</th><th>Nilai yang diharapkan</th><th>Evidence</th><th>Rekomendasi</th></tr></thead>
                   <tbody>{dataset.findings.map((finding) => <tr key={finding.id}>
                     <td><span className={`severity ${finding.severity.toLowerCase()}`}>{finding.severity === "HIGH" ? "Tinggi" : "Medium"}</span></td>
                     <td className="tabular">{finding.row}</td>
                     <td>{finding.column || "Seluruh baris"}</td>
                     <td><strong>{issueLabel[finding.issue_type]}</strong></td>
                     <td className="finding-value">{value(finding.original_value)}</td>
+                    <td className="finding-value">{finding.expected_value == null ? "—" : value(finding.expected_value)}</td>
                     <td>{finding.evidence}</td>
                     <td>{finding.recommendation}</td>
                   </tr>)}</tbody>
                 </table>
               </div>
-            ) : <div className="empty-state compact"><span className="empty-glyph" aria-hidden="true">✓</span><h3>Tidak ada temuan kualitas</h3><p>Pemeriksaan struktural dan referensi administratif tidak menemukan masalah.</p></div>}
+            ) : <div className="empty-state compact"><span className="empty-glyph" aria-hidden="true">✓</span><h3>Tidak ada temuan kualitas</h3><p>Pemeriksaan struktural, referensi administratif, tanggal, dan numerik tidak menemukan masalah.</p></div>}
           </div>
         )}
       </section>

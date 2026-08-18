@@ -1,5 +1,6 @@
 import gzip
 import json
+import math
 import os
 import uuid
 from datetime import date, datetime, time
@@ -14,6 +15,8 @@ def json_value(value: object) -> object:
     if isinstance(value, (date, datetime, time)):
         return value.isoformat()
     if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     return value
 

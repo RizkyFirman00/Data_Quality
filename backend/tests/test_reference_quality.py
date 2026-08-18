@@ -4,6 +4,7 @@ from app.ingestion import ParsedColumn, ParsedDataset
 import pytest
 
 from app.quality import QualityAssessmentError, quality_findings, reference_findings
+from app.profiling import profile_dataset
 from app.reference import load_administrative_reference
 
 
@@ -59,14 +60,14 @@ def test_combined_findings_reject_before_exceeding_limit() -> None:
     parsed = dataset([{"wilayah": "INVALID A", "kecamatan": "INVALID B"}])
 
     with pytest.raises(QualityAssessmentError, match="1 temuan"):
-        quality_findings(parsed, REFERENCE, max_findings=1)
+        quality_findings(parsed, profile_dataset(parsed), REFERENCE, max_findings=1)
 
 
 def test_combined_limit_message_keeps_configured_limit() -> None:
     parsed = dataset([{"wilayah": "invalid"}])
 
     with pytest.raises(QualityAssessmentError, match="1 temuan"):
-        quality_findings(parsed, REFERENCE, max_findings=1)
+        quality_findings(parsed, profile_dataset(parsed), REFERENCE, max_findings=1)
 
 
 def test_reference_checks_all_levels_and_skips_missing_values() -> None:

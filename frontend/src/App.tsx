@@ -30,8 +30,8 @@ export default function App() {
           </NavLink>
         </nav>
         <div className="phase-note">
-          <span>FASE 03</span>
-          <p>Referensi administratif</p>
+          <span>FASE 04</span>
+          <p>Standar format tanggal</p>
         </div>
       </aside>
       <div className="workspace">

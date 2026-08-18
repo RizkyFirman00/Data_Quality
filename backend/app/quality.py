@@ -1,8 +1,12 @@
+import math
+import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Mapping
 
 from .ingestion import ParsedDataset
 from .normalization import json_key, json_value
+from .profiling import DatasetProfile
 from .reference import AdministrativeReference, AdministrativeUnit, administrative_column
 
 
@@ -39,6 +43,8 @@ ISSUE_ORDER = {
     "INVALID_CASE": 3,
     "INVALID_REFERENCE": 4,
     "INVALID_HIERARCHY": 5,
+    "INVALID_DATE_FORMAT": 6,
+    "FORMAT_ERROR": 7,
 }
 
 
@@ -129,6 +135,179 @@ def structural_findings(
                     )
                 )
 
+    return ordered_findings(parsed, findings)
+
+
+def _date_column_kind(name: str, candidate_role: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    if normalized == "periode_data":
+        return "period"
+    date_compounds = {"birthdate", "startdate", "enddate", "eventdate"}
+    if candidate_role == "date" or any(
+        token in {"tanggal", "tgl", "date"}
+        or token.startswith(("tanggal", "tgl"))
+        or token in date_compounds
+        for token in normalized.split("_")
+    ):
+        return "date"
+    return None
+
+
+def date_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    findings: list[FindingResult] = []
+
+    def add(finding: FindingResult) -> None:
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(finding)
+
+    required_date = "YYYYMMDD atau YYYYMMDD S.D. YYYYMMDD"
+    required_period = "YYYY atau YYYYMM"
+
+    def parsed_date(text: str) -> date | None:
+        if not re.fullmatch(r"[0-9]{8}", text):
+            return None
+        try:
+            return datetime.strptime(text, "%Y%m%d").date()
+        except ValueError:
+            return None
+
+    for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
+        kind = _date_column_kind(column.display_name, column_profile.candidate_role)
+        if kind is None:
+            continue
+        is_period = kind == "period"
+        for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+            value = record.get(column.key)
+            if value is None or isinstance(value, str) and (
+                not value.strip() or value in {"-", "N/A"}
+            ):
+                continue
+            text = str(value)
+            expected = required_period if is_period else required_date
+            evidence = "Nilai periode data harus menggunakan format YYYY atau YYYYMM."
+            if is_period:
+                if (
+                    not isinstance(value, (bool, float, date))
+                    and re.fullmatch(r"[0-9]{4}(?:[0-9]{2})?", text)
+                    and 1 <= int(text[:4]) <= 9999
+                    and (len(text) == 4 or 1 <= int(text[4:]) <= 12)
+                ):
+                    continue
+            else:
+                exact_range = re.fullmatch(r"([0-9]{8}) S\.D\. ([0-9]{8})", text)
+                if exact_range:
+                    start, end = map(parsed_date, exact_range.groups())
+                    if start and end and start <= end:
+                        continue
+                    evidence = (
+                        "Tanggal awal tidak boleh melewati tanggal akhir."
+                        if start and end
+                        else "Salah satu tanggal bukan tanggal kalender yang valid."
+                    )
+                elif (
+                    not isinstance(value, (bool, float, date))
+                    and parsed_date(text)
+                ):
+                    continue
+                else:
+                    evidence = (
+                        "Nilai bukan tanggal kalender yang valid."
+                        if re.fullmatch(r"[0-9]{8}", text)
+                        else "Nilai tanggal tidak menggunakan format yang diwajibkan."
+                    )
+                    if isinstance(value, date):
+                        expected = value.strftime("%Y%m%d")
+                    else:
+                        separated = re.fullmatch(
+                            r"([0-9]{4})([-/.])([0-9]{2})\2([0-9]{2})", text
+                        )
+                        candidate_range = re.fullmatch(
+                            r"([0-9]{8})\s*s\.d\.\s*([0-9]{8})",
+                            text,
+                            re.IGNORECASE,
+                        )
+                        if separated:
+                            candidate = "".join((separated[1], separated[3], separated[4]))
+                            if parsed_date(candidate):
+                                expected = candidate
+                        elif candidate_range:
+                            start, end = map(parsed_date, candidate_range.groups())
+                            if start and end and start <= end:
+                                expected = f"{candidate_range[1]} S.D. {candidate_range[2]}"
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=column.display_name,
+                    issue_type="INVALID_DATE_FORMAT",
+                    severity="HIGH",
+                    original_value=json_value(value),
+                    expected_value=expected,
+                    evidence=evidence,
+                    recommendation=f"Gunakan {expected} setelah memverifikasi sumber OPD.",
+                    detector="deterministic:date-v1",
+                )
+            )
+    return ordered_findings(parsed, findings)
+
+
+def numeric_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    findings: list[FindingResult] = []
+
+    def add(finding: FindingResult) -> None:
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(finding)
+
+    def canonical(value: object) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        if isinstance(value, float):
+            return math.isfinite(value)
+        return isinstance(value, str) and bool(
+            re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", value)
+        )
+
+    expected = "Angka ASCII dengan titik desimal"
+    for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
+        if column_profile.candidate_role != "numeric" or _date_column_kind(
+            column.display_name, column_profile.candidate_role
+        ):
+            continue
+        for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+            value = record.get(column.key)
+            if value is None or isinstance(value, str) and (
+                not value.strip() or value in {"-", "N/A"}
+            ):
+                continue
+            if canonical(value):
+                continue
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=column.display_name,
+                    issue_type="FORMAT_ERROR",
+                    severity="HIGH",
+                    original_value=json_value(value),
+                    expected_value=expected,
+                    evidence="Nilai pada kolom numerik tidak menggunakan format angka kanonis.",
+                    recommendation=(
+                        "Gunakan angka ASCII dengan titik desimal setelah "
+                        "memverifikasi sumber OPD."
+                    ),
+                    detector="deterministic:numeric-v1",
+                )
+            )
     return ordered_findings(parsed, findings)
 
 
@@ -255,6 +434,7 @@ def reference_findings(
 
 def quality_findings(
     parsed: ParsedDataset,
+    profile: DatasetProfile,
     reference: AdministrativeReference,
     max_findings: int = 10_000,
 ) -> list[FindingResult]:
@@ -263,6 +443,21 @@ def quality_findings(
         reference_results = reference_findings(
             parsed, reference, max_findings - len(structural)
         )
+        date_results = date_findings(
+            parsed,
+            profile,
+            max_findings - len(structural) - len(reference_results),
+        )
+        numeric_results = numeric_findings(
+            parsed,
+            profile,
+            max_findings
+            - len(structural)
+            - len(reference_results)
+            - len(date_results),
+        )
     except QualityAssessmentError as exc:
         raise _finding_limit_error(max_findings) from exc
-    return ordered_findings(parsed, structural + reference_results)
+    return ordered_findings(
+        parsed, structural + reference_results + date_results + numeric_results
+    )

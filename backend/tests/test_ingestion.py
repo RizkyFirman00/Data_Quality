@@ -199,7 +199,7 @@ def test_xlsx_preserves_formula_only_row_without_cached_result(tmp_path: Path) -
 
     parsed = parse_dataset(path, "data.xlsx")
 
-    assert parsed.records == [{"hasil": None}]
+    assert parsed.records == [{"hasil": "=1+1"}]
     assert parsed.source_rows == [2]
 
 
@@ -212,4 +212,4 @@ def test_xlsx_preserves_array_formula_only_row(tmp_path: Path) -> None:
 
     parsed = parse_dataset(path, "data.xlsx")
 
-    assert parsed.records == [{"hasil": None}]
+    assert parsed.records == [{"hasil": "=1+1"}]

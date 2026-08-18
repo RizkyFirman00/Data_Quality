@@ -165,8 +165,78 @@ def test_upload_xlsx_serializes_native_date_values(client: TestClient) -> None:
     )
 
     assert response.status_code == 201
-    assert response.json()["preview"][0]["tanggal_kejadian"] == "2025-01-29T00:00:00"
-    assert response.json()["column_profiles"][0]["sample_values"] == ["2025-01-29T00:00:00"]
+    body = response.json()
+    assert body["preview"][0]["tanggal_kejadian"] == "2025-01-29T00:00:00"
+    assert body["column_profiles"][0]["sample_values"] == ["2025-01-29T00:00:00"]
+    assert body["findings"][0]["original_value"] == "2025-01-29T00:00:00"
+    assert body["findings"][0]["expected_value"] == "20250129"
+
+
+def test_upload_persists_date_and_period_findings(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasets",
+        files={
+            "file": (
+                "tanggal.csv",
+                b"tanggal_kejadian,periode_data\n20250129,202501\n2025-01-30,202513\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["finding_summary"]["by_issue_type"] == {"INVALID_DATE_FORMAT": 2}
+    assert body["finding_summary"]["by_severity"] == {"HIGH": 2}
+    assert [item["expected_value"] for item in body["findings"]] == [
+        "20250130",
+        "YYYY atau YYYYMM",
+    ]
+    assert all(item["detector"] == "deterministic:date-v1" for item in body["findings"])
+
+
+def test_upload_persists_numeric_format_findings(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasets",
+        files={
+            "file": (
+                "numeric.csv",
+                b'ukuran\n0\n1\n2\n3\n4\n5\n6\n7\n8\n"1,5"\n',
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["finding_summary"]["by_issue_type"] == {"FORMAT_ERROR": 1}
+    finding = body["findings"][0]
+    assert (finding["row"], finding["column"]) == (11, "ukuran")
+    assert finding["original_value"] == "1,5"
+    assert finding["expected_value"] == "Angka ASCII dengan titik desimal"
+    assert finding["detector"] == "deterministic:numeric-v1"
+
+
+def test_upload_xlsx_preserves_native_numbers_for_numeric_quality(
+    client: TestClient,
+) -> None:
+    workbook = Workbook()
+    workbook.active.append(["ukuran"])
+    for value in range(9):
+        workbook.active.append([value])
+    workbook.active.append(["1,5"])
+    content = BytesIO()
+    workbook.save(content)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("numeric.xlsx", content.getvalue(), "application/octet-stream")},
+    )
+
+    assert response.status_code == 201
+    finding = response.json()["findings"][0]
+    assert finding["row"] == 11
+    assert finding["original_value"] == "1,5"
 
 
 def test_unexpected_processing_failure_is_safe_and_cleans_artifacts(
@@ -211,7 +281,7 @@ def test_quality_failure_is_safe_and_cleans_artifacts(
 def test_quality_limit_returns_actionable_422_and_cleans_artifacts(
     client: TestClient, tmp_path: Path, monkeypatch
 ) -> None:
-    def reject_findings(_parsed, _reference, max_findings):
+    def reject_findings(_parsed, _profile, _reference, max_findings):
         assert max_findings == 10_000
         raise QualityAssessmentError(
             "Dataset menghasilkan lebih dari 10000 temuan kualitas. Kurangi ukuran dataset."

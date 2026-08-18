@@ -98,7 +98,7 @@ async def upload_dataset(
             load_administrative_reference, config.master_reference_path
         )
         finding_results = await run_in_threadpool(
-            quality_findings, parsed, reference, config.max_findings
+            quality_findings, parsed, profile, reference, config.max_findings
         )
         dataset.original_file_key = original_key
         dataset.snapshot_key = snapshot_key

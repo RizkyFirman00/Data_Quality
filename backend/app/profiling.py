@@ -1,3 +1,4 @@
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -62,21 +63,23 @@ def _infer_type(name: str, values: list[object]) -> str:
     boolean_words = {"true", "false", "yes", "no", "ya", "tidak"}
     if _ratio(values, lambda value: isinstance(value, bool) or str(value).lower() in boolean_words) >= 0.9:
         return "boolean"
-    if _ratio(values, lambda value: isinstance(value, int) and not isinstance(value, bool) or bool(re.fullmatch(r"[+-]?\d+", str(value)))) >= 0.9:
+    if _ratio(values, lambda value: isinstance(value, int) and not isinstance(value, bool) or bool(re.fullmatch(r"[+-]?[0-9]+", str(value)))) >= 0.9:
         return "integer"
-    if _ratio(values, lambda value: isinstance(value, (int, float)) and not isinstance(value, bool) or _decimal_text(value)) >= 0.9:
+    if _ratio(values, _numeric_like) >= 0.9:
         return "decimal"
     if _ratio(values, _is_date) >= 0.9:
         return "date"
     return "text"
 
 
-def _decimal_text(value: object) -> bool:
-    try:
-        float(str(value))
-        return True
-    except (TypeError, ValueError):
+def _numeric_like(value: object) -> bool:
+    if isinstance(value, bool):
         return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return bool(re.fullmatch(r"[+-]?[0-9]+(?:[.,][0-9]+)?", str(value)))
 
 
 def _role(name: str, inferred_type: str, unique_count: int, value_count: int) -> str:

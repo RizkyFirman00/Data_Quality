@@ -1,10 +1,13 @@
+from collections.abc import Mapping, Sequence
+
 from app.ingestion import ParsedColumn, ParsedDataset
 from app.profiling import profile_dataset
 
 
-def make_dataset(records: list[dict[str, object]]) -> ParsedDataset:
-    columns = [ParsedColumn(name, name, name) for name in records[0]]
-    return ParsedDataset(columns, records, list(range(2, len(records) + 2)))
+def make_dataset(records: Sequence[Mapping[str, object]]) -> ParsedDataset:
+    normalized = [dict(record) for record in records]
+    columns = [ParsedColumn(name, name, name) for name in normalized[0]]
+    return ParsedDataset(columns, normalized, list(range(2, len(normalized) + 2)))
 
 
 def test_profile_counts_without_treating_na_or_zero_as_missing() -> None:
@@ -73,3 +76,15 @@ def test_profile_uses_specific_administrative_roles() -> None:
         "administrative_district",
         "administrative_village",
     ]
+
+
+def test_profile_treats_comma_decimals_as_numeric_like_evidence() -> None:
+    records = [
+        {"ukuran": f"{index},5", "catatan": "BEBAS"}
+        for index in range(9)
+    ] + [{"ukuran": "TEKS", "catatan": "BEBAS"}]
+
+    ukuran, catatan = profile_dataset(make_dataset(records)).columns
+
+    assert ukuran.candidate_role == "numeric"
+    assert catatan.candidate_role != "numeric"
