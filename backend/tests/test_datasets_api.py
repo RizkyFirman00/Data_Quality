@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 import app.datasets as datasets_module
+from app.config import Settings, get_settings
+from app.main import app
 from app.quality import QualityAssessmentError
 
 
@@ -87,6 +89,40 @@ def test_upload_xlsx_runs_structural_quality_checks(client: TestClient) -> None:
     assert response.json()["findings"][0]["issue_type"] == "INVALID_CASE"
 
 
+def test_upload_runs_administrative_reference_checks(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasets",
+        files={
+            "file": (
+                "reference.csv",
+                b"wilayah,kecamatan,kelurahan\nBUKAN WILAYAH,TANJUNG PRIOK,SUNGAI BAMBU\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["finding_summary"]["by_issue_type"] == {"INVALID_REFERENCE": 1}
+    assert body["column_profiles"][0]["candidate_role"] == "administrative_city"
+
+
+def test_xlsx_native_administrative_value_is_json_safe(client: TestClient) -> None:
+    workbook = Workbook()
+    workbook.active.append(["wilayah"])
+    workbook.active.append([date(2025, 1, 29)])
+    content = BytesIO()
+    workbook.save(content)
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("reference.xlsx", content.getvalue(), "application/octet-stream")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["findings"][0]["original_value"] == "2025-01-29T00:00:00"
+
+
 def test_invalid_upload_is_rejected_without_internal_paths(client: TestClient) -> None:
     response = client.post(
         "/api/datasets",
@@ -158,7 +194,7 @@ def test_quality_failure_is_safe_and_cleans_artifacts(
     def fail_quality(*_args, **_kwargs):
         raise RuntimeError("quality detail must stay private")
 
-    monkeypatch.setattr(datasets_module, "structural_findings", fail_quality)
+    monkeypatch.setattr(datasets_module, "quality_findings", fail_quality)
 
     response = client.post(
         "/api/datasets",
@@ -175,13 +211,13 @@ def test_quality_failure_is_safe_and_cleans_artifacts(
 def test_quality_limit_returns_actionable_422_and_cleans_artifacts(
     client: TestClient, tmp_path: Path, monkeypatch
 ) -> None:
-    def reject_findings(_parsed, max_findings):
+    def reject_findings(_parsed, _reference, max_findings):
         assert max_findings == 10_000
         raise QualityAssessmentError(
             "Dataset menghasilkan lebih dari 10000 temuan kualitas. Kurangi ukuran dataset."
         )
 
-    monkeypatch.setattr(datasets_module, "structural_findings", reject_findings)
+    monkeypatch.setattr(datasets_module, "quality_findings", reject_findings)
 
     response = client.post(
         "/api/datasets",
@@ -190,6 +226,27 @@ def test_quality_limit_returns_actionable_422_and_cleans_artifacts(
 
     assert response.status_code == 422
     assert "kurangi ukuran dataset" in response.json()["detail"]["message"].lower()
+    assert client.get("/api/datasets").json()[0]["status"] == "FAILED"
+    assert list((tmp_path / "storage" / "originals").glob("*")) == []
+    assert list((tmp_path / "storage" / "snapshots").glob("*")) == []
+
+
+def test_reference_failure_returns_503_and_cleans_artifacts(
+    client: TestClient, tmp_path: Path
+) -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        database_url="sqlite://",
+        storage_root=tmp_path / "storage",
+        master_reference_path=tmp_path / "missing.csv",
+    )
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("contoh.csv", b"wilayah\nJAKARTA\n", "text/csv")},
+    )
+
+    assert response.status_code == 503
+    assert "referensi" in response.json()["detail"]["message"].lower()
     assert client.get("/api/datasets").json()[0]["status"] == "FAILED"
     assert list((tmp_path / "storage" / "originals").glob("*")) == []
     assert list((tmp_path / "storage" / "snapshots").glob("*")) == []

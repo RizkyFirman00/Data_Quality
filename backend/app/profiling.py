@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 from .ingestion import ParsedColumn, ParsedDataset
 from .normalization import json_key, json_record, json_value
+from .reference import administrative_column
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,9 @@ def _decimal_text(value: object) -> bool:
 
 def _role(name: str, inferred_type: str, unique_count: int, value_count: int) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    administrative = administrative_column(name)
+    if administrative:
+        return f"administrative_{administrative[0]}"
     if normalized == "periode_data":
         return "categorical"
     if normalized in {"id", "nik", "npsn", "uuid"} or normalized.startswith("kode_") or normalized.endswith("_id"):

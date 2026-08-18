@@ -14,7 +14,8 @@ from .ingestion import DatasetParseError, parse_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
 from .normalization import write_snapshot
 from .profiling import profile_dataset
-from .quality import QualityAssessmentError, structural_findings
+from .quality import QualityAssessmentError, quality_findings
+from .reference import ReferenceDataError, load_administrative_reference
 from .schemas import DatasetDetailResponse, DatasetSummaryResponse
 from .storage import delete_storage_key, persist_original
 
@@ -93,8 +94,11 @@ async def upload_dataset(
             write_snapshot, parsed, config.storage_root, dataset.id
         )
         profile = await run_in_threadpool(profile_dataset, parsed, config.preview_rows)
+        reference = await run_in_threadpool(
+            load_administrative_reference, config.master_reference_path
+        )
         finding_results = await run_in_threadpool(
-            structural_findings, parsed, config.max_findings
+            quality_findings, parsed, reference, config.max_findings
         )
         dataset.original_file_key = original_key
         dataset.snapshot_key = snapshot_key
@@ -129,6 +133,16 @@ async def upload_dataset(
         delete_storage_key(config.storage_root, original_key)
         delete_storage_key(config.storage_root, snapshot_key)
         raise HTTPException(status_code=422, detail={"message": str(exc), "dataset_id": str(dataset.id)}) from exc
+    except ReferenceDataError as exc:
+        dataset.status = DatasetStatus.FAILED
+        dataset.failure_message = str(exc)
+        session.commit()
+        delete_storage_key(config.storage_root, original_key)
+        delete_storage_key(config.storage_root, snapshot_key)
+        raise HTTPException(
+            status_code=503,
+            detail={"message": str(exc), "dataset_id": str(dataset.id)},
+        ) from exc
     except Exception as exc:
         logger.exception("Dataset processing failed", extra={"dataset_id": str(dataset.id)})
         session.rollback()

@@ -1,5 +1,5 @@
 export type DatasetStatus = "PROCESSING" | "COMPLETED" | "FAILED";
-export type FindingIssueType = "DUPLICATE" | "MISSING_VALUE" | "INVALID_PLACEHOLDER" | "INVALID_CASE";
+export type FindingIssueType = "DUPLICATE" | "MISSING_VALUE" | "INVALID_PLACEHOLDER" | "INVALID_CASE" | "INVALID_REFERENCE" | "INVALID_HIERARCHY";
 export type FindingSeverity = "HIGH" | "MEDIUM";
 
 export interface PublicConfig {

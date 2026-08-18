@@ -53,3 +53,23 @@ def test_profile_infers_roles_with_ninety_percent_consistency() -> None:
     assert by_name["kategori"].candidate_role == "categorical"
     assert by_name["campuran"].inferred_type == "text"
     assert by_name["periode_data"].candidate_role == "categorical"
+
+
+def test_profile_uses_specific_administrative_roles() -> None:
+    profile = profile_dataset(
+        make_dataset(
+            [
+                {
+                    "wilayah": "KOTA ADM. JAKARTA UTARA",
+                    "kecamatan": "TANJUNG PRIOK",
+                    "kelurahan": "SUNGAI BAMBU",
+                }
+            ]
+        )
+    )
+
+    assert [column.candidate_role for column in profile.columns] == [
+        "administrative_city",
+        "administrative_district",
+        "administrative_village",
+    ]

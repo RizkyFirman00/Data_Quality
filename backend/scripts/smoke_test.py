@@ -36,6 +36,46 @@ def main() -> None:
             assert profiles["catatan"]["sample_values"][0] == "N/A"
             print(f"OK {name}: {dataset['id']}")
 
+        for name in ("sample_reference_quality.csv", "sample_reference_quality.xlsx"):
+            path = samples / name
+            with path.open("rb") as handle:
+                response = client.post("/datasets", files={"file": (name, handle)})
+            response.raise_for_status()
+            dataset = response.json()
+            assert (dataset["row_count"], dataset["column_count"]) == (7, 3)
+            assert dataset["finding_count"] == 10
+            assert set(dataset["finding_summary"]["by_issue_type"]) == {
+                "MISSING_VALUE",
+                "INVALID_PLACEHOLDER",
+                "INVALID_CASE",
+                "INVALID_REFERENCE",
+                "INVALID_HIERARCHY",
+            }
+            reference_findings = [
+                finding
+                for finding in dataset["findings"]
+                if finding["issue_type"] in {"INVALID_REFERENCE", "INVALID_HIERARCHY"}
+            ]
+            assert all(
+                finding["detector"].startswith("deterministic:reference-v1:")
+                for finding in reference_findings
+            )
+            assert not any(
+                finding["issue_type"] == "INVALID_REFERENCE"
+                and finding["original_value"] in {
+                    "Kota Adm. Jakarta Utara",
+                    "Tanjung Priok",
+                    "Sungai Bambu",
+                }
+                for finding in dataset["findings"]
+            )
+            profiles = {item["original_name"]: item for item in dataset["column_profiles"]}
+            assert profiles["wilayah"]["candidate_role"] == "administrative_city"
+            assert profiles["kecamatan"]["candidate_role"] == "administrative_district"
+            assert profiles["kelurahan"]["candidate_role"] == "administrative_village"
+            assert "original_file_key" not in str(dataset)
+            print(f"OK {name}: {dataset['id']}")
+
 
 if __name__ == "__main__":
     main()

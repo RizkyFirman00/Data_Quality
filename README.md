@@ -1,16 +1,20 @@
 # Intelligent Data Quality Assessment
 
-Phase 2 menyediakan ingest, profiling, dan pemeriksaan kualitas struktural deterministik untuk reviewer data Pemerintah Provinsi DKI Jakarta. Aplikasi menerima CSV/XLSX, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan preview, karakteristik kolom, evidence, dan rekomendasi.
+Phase 3 menyediakan ingest, profiling, pemeriksaan kualitas struktural, serta validasi referensi administratif DKI Jakarta untuk reviewer data. Aplikasi menerima CSV/XLSX, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan preview, karakteristik kolom, evidence, dan rekomendasi.
 
 Aplikasi tidak mengubah dataset sumber dan belum memberikan verdict lulus/gagal. Reviewer tetap menjadi pengambil keputusan.
 
-## Pemeriksaan Phase 2
+## Pemeriksaan Phase 2 dan 3
 
 - Duplikat hanya untuk baris lengkap yang sama; kemunculan pertama menjadi referensi.
 - `NULL`, string kosong, dan whitespace-only adalah `MISSING_VALUE`.
 - String `-` adalah `INVALID_PLACEHOLDER`.
 - Semua nilai string yang mengandung huruf harus uppercase; rekomendasi tidak diterapkan otomatis.
 - `N/A`, angka `0`, dan string `"0"` tetap valid dan bukan missing.
+- Kolom administratif yang dikenali secara eksplisit divalidasi terhadap `backend/reference/master.csv`: 267 kelurahan, 44 kecamatan, dan 6 kota/kabupaten.
+- Header `wilayah` dipetakan khusus ke kota/kabupaten. Nama dibandingkan secara uppercase tanpa mengubah nilai sumber; kode dibandingkan sebagai string persis.
+- Hubungan kota/kabupaten–kecamatan–kelurahan divalidasi hanya setelah masing-masing nilai valid, sehingga temuan tidak berantai dari referensi yang salah.
+- Master yang hilang atau rusak membuat health dan upload gagal secara aman; layanan tidak menjalankan pemeriksaan dengan referensi yang tidak tepercaya.
 
 ## Menjalankan lokal
 
@@ -68,6 +72,7 @@ docker compose exec backend env SAMPLES_DIR=/samples python scripts/smoke_test.p
 |---|---:|---|
 | `DATABASE_URL` | koneksi PostgreSQL Compose | Hanya backend |
 | `STORAGE_ROOT` | `/data/storage` | Lokasi file asli dan snapshot |
+| `MASTER_REFERENCE_PATH` | `/app/reference/master.csv` | Snapshot referensi administratif backend |
 | `MAX_UPLOAD_MB` | `25` | Batas upload server-side |
 | `MAX_DATASET_ROWS` | `100000` | Batas baris data per dataset |
 | `MAX_DATASET_COLUMNS` | `1000` | Batas kolom per dataset |
@@ -79,11 +84,11 @@ docker compose exec backend env SAMPLES_DIR=/samples python scripts/smoke_test.p
 
 File pengguna disimpan di `storage/originals/` dengan nama UUID. Snapshot kerja berada di `storage/snapshots/`. Nama file pengguna tidak pernah dipakai sebagai path penyimpanan.
 
-## Batas Phase 2
+## Batas Phase 3
 
 - Format resmi: CSV dan XLSX; XLS lama belum didukung.
 - Pemrosesan masih sinkron karena target awal kecil. Queue ditambahkan hanya bila pengukuran menunjukkan kebutuhan.
 - Penyimpanan lokal cocok untuk satu host. Object storage diperlukan sebelum menjalankan banyak instance.
 - Belum ada autentikasi; gunakan hanya dalam lingkungan lokal/internal terkontrol.
-- Belum ada validasi tanggal, koordinat, kalkulasi, statistik, referensi DKI, typo/LLM, keputusan reviewer, filter findings, atau export laporan.
-- Findings Phase 2 bersifat read-only dan harus diverifikasi reviewer.
+- Belum ada fuzzy matching/typo, LLM, validasi tanggal, koordinat, kalkulasi, statistik, keputusan reviewer, filter findings, atau export laporan.
+- Findings Phase 2/3 bersifat read-only dan harus diverifikasi reviewer.

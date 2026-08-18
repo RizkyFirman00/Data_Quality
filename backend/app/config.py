@@ -10,6 +10,12 @@ class Settings:
         "postgresql+psycopg://data_quality:data_quality@localhost:5432/data_quality",
     )
     storage_root: Path = Path(os.getenv("STORAGE_ROOT", "storage"))
+    master_reference_path: Path = Path(
+        os.getenv(
+            "MASTER_REFERENCE_PATH",
+            str(Path(__file__).resolve().parents[1] / "reference" / "master.csv"),
+        )
+    )
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "25"))
     max_dataset_rows: int = int(os.getenv("MAX_DATASET_ROWS", "100000"))
     max_dataset_columns: int = int(os.getenv("MAX_DATASET_COLUMNS", "1000"))

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, getDataset } from "../api";
-import type { DatasetDetail } from "../types";
+import type { DatasetDetail, FindingIssueType } from "../types";
 
 const value = (item: unknown) => item === null ? "NULL" : item === "" ? '""' : typeof item === "string" && !item.trim() ? "␠".repeat(item.length) : typeof item === "object" ? JSON.stringify(item) : String(item);
 const date = (item: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item));
-const label: Record<string, string> = { integer: "Bilangan bulat", decimal: "Desimal", text: "Teks", date: "Tanggal", boolean: "Boolean", unknown: "Belum diketahui", identifier: "Identifier", numeric: "Numerik", categorical: "Kategorikal", geographic: "Geografis" };
-const issueLabel = { DUPLICATE: "Duplikat penuh", MISSING_VALUE: "Nilai kosong", INVALID_PLACEHOLDER: "Placeholder tidak valid", INVALID_CASE: "Bukan uppercase" };
+const label: Record<string, string> = { integer: "Bilangan bulat", decimal: "Desimal", text: "Teks", date: "Tanggal", boolean: "Boolean", unknown: "Belum diketahui", identifier: "Identifier", numeric: "Numerik", categorical: "Kategorikal", geographic: "Geografis", administrative_city: "Kota/Kabupaten administratif", administrative_district: "Kecamatan administratif", administrative_village: "Kelurahan administratif" };
+const issueLabel: Record<FindingIssueType, string> = { DUPLICATE: "Duplikat penuh", MISSING_VALUE: "Nilai kosong", INVALID_PLACEHOLDER: "Placeholder tidak valid", INVALID_CASE: "Bukan uppercase", INVALID_REFERENCE: "Referensi tidak valid", INVALID_HIERARCHY: "Hierarki tidak valid" };
 
 export default function DatasetDetailPage() {
   const { datasetId = "" } = useParams();
@@ -25,7 +25,7 @@ export default function DatasetDetailPage() {
   return (
     <main className="page detail-page">
       <Link className="back-link" to="/datasets">← Kembali ke dataset</Link>
-      <div className="detail-title"><div><span className="eyebrow">Profil &amp; kualitas struktural</span><h1>{dataset.original_filename}</h1><p>{dataset.worksheet_name ? `Worksheet: ${dataset.worksheet_name}` : "Sumber: unggahan file"}</p><p>Diunggah: {date(dataset.created_at)} · Selesai: {date(dataset.completed_at!)}</p></div><span className="status completed">Selesai diperiksa</span></div>
+      <div className="detail-title"><div><span className="eyebrow">Profil &amp; kualitas data</span><h1>{dataset.original_filename}</h1><p>{dataset.worksheet_name ? `Worksheet: ${dataset.worksheet_name}` : "Sumber: unggahan file"}</p><p>Diunggah: {date(dataset.created_at)} · Selesai: {date(dataset.completed_at!)}</p></div><span className="status completed">Selesai diperiksa</span></div>
       <section className="facts" aria-label="Ringkasan dataset">
         <div><span>Baris</span><strong>{dataset.row_count.toLocaleString("id-ID")}</strong></div>
         <div><span>Kolom</span><strong>{dataset.column_count}</strong></div>
@@ -36,7 +36,7 @@ export default function DatasetDetailPage() {
         <div className="tabs" role="tablist" aria-label="Detail dataset">
           <button role="tab" aria-selected={tab === "preview"} onClick={() => setTab("preview")}>Preview data <span>{dataset.preview.length}</span></button>
           <button role="tab" aria-selected={tab === "profiles"} onClick={() => setTab("profiles")}>Profil kolom <span>{dataset.column_profiles.length}</span></button>
-          <button role="tab" aria-selected={tab === "findings"} onClick={() => setTab("findings")}>Temuan struktural <span>{dataset.finding_count}</span></button>
+          <button role="tab" aria-selected={tab === "findings"} onClick={() => setTab("findings")}>Temuan kualitas <span>{dataset.finding_count}</span></button>
         </div>
         {tab === "preview" ? (
           <div className="table-wrap data-preview" role="tabpanel">
@@ -55,8 +55,8 @@ export default function DatasetDetailPage() {
           </div>
         ) : (
           <div className="findings-panel" role="tabpanel">
-            <div className="finding-summary" aria-label="Ringkasan temuan struktural">
-              {Object.entries(issueLabel).map(([issue, text]) => <div key={issue}><span>{text}</span><strong>{dataset.finding_summary.by_issue_type[issue as keyof typeof issueLabel] || 0}</strong></div>)}
+            <div className="finding-summary" aria-label="Ringkasan temuan kualitas">
+              {Object.entries(issueLabel).map(([issue, text]) => <div key={issue}><span>{text}</span><strong>{dataset.finding_summary.by_issue_type[issue as FindingIssueType] || 0}</strong></div>)}
               <div className="severity-total high"><span>Severity tinggi</span><strong>{dataset.finding_summary.by_severity.HIGH || 0}</strong></div>
               <div className="severity-total medium"><span>Severity medium</span><strong>{dataset.finding_summary.by_severity.MEDIUM || 0}</strong></div>
             </div>
@@ -75,7 +75,7 @@ export default function DatasetDetailPage() {
                   </tr>)}</tbody>
                 </table>
               </div>
-            ) : <div className="empty-state compact"><span className="empty-glyph" aria-hidden="true">✓</span><h3>Tidak ada temuan struktural</h3><p>Empat pemeriksaan Phase 2 tidak menemukan masalah pada dataset ini.</p></div>}
+            ) : <div className="empty-state compact"><span className="empty-glyph" aria-hidden="true">✓</span><h3>Tidak ada temuan kualitas</h3><p>Pemeriksaan struktural dan referensi administratif tidak menemukan masalah.</p></div>}
           </div>
         )}
       </section>

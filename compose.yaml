@@ -18,6 +18,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://data_quality:data_quality@db:5432/data_quality}
       STORAGE_ROOT: /data/storage
+      MASTER_REFERENCE_PATH: /app/reference/master.csv
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
       MAX_DATASET_ROWS: ${MAX_DATASET_ROWS:-100000}
       MAX_DATASET_COLUMNS: ${MAX_DATASET_COLUMNS:-1000}
@@ -27,6 +28,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     volumes:
       - ./backend:/app
+      - ./backend/reference/master.csv:/app/reference/master.csv:ro
       - ./storage:/data/storage
       - ./samples:/samples:ro
     ports:
