@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-data_quality}
+      POSTGRES_USER: ${POSTGRES_USER:-data_quality}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-data_quality}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://data_quality:data_quality@db:5432/data_quality}
+      STORAGE_ROOT: /data/storage
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      MAX_DATASET_ROWS: ${MAX_DATASET_ROWS:-100000}
+      MAX_DATASET_COLUMNS: ${MAX_DATASET_COLUMNS:-1000}
+      MAX_DATASET_CELLS: ${MAX_DATASET_CELLS:-2000000}
+      PREVIEW_ROWS: ${PREVIEW_ROWS:-50}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    volumes:
+      - ./backend:/app
+      - ./storage:/data/storage
+      - ./samples:/samples:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_API_URL: http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
