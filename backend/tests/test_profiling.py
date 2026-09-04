@@ -52,7 +52,7 @@ def test_profile_infers_roles_with_ninety_percent_consistency() -> None:
     assert by_name["tanggal_kejadian"].inferred_type == "date"
     assert by_name["tanggal_kejadian"].candidate_role == "date"
     assert by_name["lintang"].inferred_type == "decimal"
-    assert by_name["lintang"].candidate_role == "geographic"
+    assert by_name["lintang"].candidate_role == "latitude"
     assert by_name["kategori"].candidate_role == "categorical"
     assert by_name["campuran"].inferred_type == "text"
     assert by_name["periode_data"].candidate_role == "categorical"

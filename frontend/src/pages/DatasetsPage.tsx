@@ -1,65 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, listDatasets } from "../api";
+import { ChevronRightIcon, PlusIcon, SearchIcon } from "../icons";
 import type { DatasetSummary } from "../types";
 
 const date = (value: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+const statusKey = (item: DatasetSummary) => item.status === "COMPLETED" ? item.assessment_status || item.status : item.status;
+const statusLabel = (item: DatasetSummary) => item.status === "PROCESSING" ? "Diproses" : item.status === "FAILED" ? "Gagal" : item.assessment_status === "PASSED" ? "Lulus" : "Perlu koreksi";
 
 export default function DatasetsPage() {
   const [datasets, setDatasets] = useState<DatasetSummary[] | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
-
-  useEffect(() => {
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("ALL");
+  const load = useCallback(() => {
+    setError(null);
     listDatasets().then(setDatasets).catch((reason) => setError(reason instanceof ApiError ? reason : new ApiError("Riwayat dataset tidak dapat dimuat.")));
   }, []);
+  useEffect(load, [load]);
+  const visible = useMemo(() => (datasets || []).filter((item) => item.original_filename.toLowerCase().includes(search.toLowerCase()) && (status === "ALL" || statusKey(item) === status)), [datasets, search, status]);
 
-  return (
-    <main className="page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Ruang kerja reviewer</span>
-          <h1>Dataset</h1>
-          <p>Unggah, periksa struktur, dan pahami karakteristik data OPD.</p>
-        </div>
-        <Link className="button primary" to="/datasets/new">Unggah dataset <span aria-hidden="true">↗</span></Link>
-      </div>
-
-      <section className="ledger" aria-labelledby="history-title">
-        <div className="section-title">
-          <div><span className="section-index">01</span><h2 id="history-title">Riwayat unggahan</h2></div>
-          {datasets && <span>{datasets.length} dataset</span>}
-        </div>
-        {error && <div className="message error"><strong>Riwayat gagal dimuat</strong><p>{error.message}</p>{error.requestId && <code>ID: {error.requestId}</code>}</div>}
-        {!error && datasets === null && <div className="loading"><span /> Membaca riwayat dataset…</div>}
-        {datasets?.length === 0 && (
-          <div className="empty-state">
-            <span className="empty-glyph" aria-hidden="true">＋</span>
-            <h3>Belum ada dataset</h3>
-            <p>Mulai dengan CSV atau XLSX dari OPD. File sumber akan tetap utuh.</p>
-            <Link className="text-link" to="/datasets/new">Unggah dataset pertama →</Link>
-          </div>
-        )}
-        {datasets && datasets.length > 0 && (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Dataset</th><th>Format</th><th>Dimensi</th><th>Temuan</th><th>Diunggah</th><th>Status</th><th><span className="sr-only">Buka</span></th></tr></thead>
-              <tbody>
-                {datasets.map((item) => (
-                  <tr key={item.id}>
-                    <td><Link className="dataset-name" to={`/datasets/${item.id}`}>{item.original_filename}</Link><small>File upload</small></td>
-                    <td><span className="file-type">{item.file_type.toUpperCase()}</span></td>
-                    <td className="tabular">{item.row_count.toLocaleString("id-ID")} × {item.column_count}</td>
-                    <td className="tabular"><strong>{item.finding_count.toLocaleString("id-ID")}</strong></td>
-                    <td>{date(item.created_at)}</td>
-                    <td><span className={`status ${item.status.toLowerCase()}`}>{item.status === "COMPLETED" ? "Selesai" : item.status === "FAILED" ? "Gagal" : "Diproses"}</span></td>
-                    <td><Link className="row-action" aria-label={`Buka ${item.original_filename}`} to={`/datasets/${item.id}`}>→</Link></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </main>
-  );
+  return <main className="page">
+    <div className="page-heading"><div><span className="eyebrow">Dataset</span><h1>Riwayat assessment</h1><p>Cari, buka, dan periksa kembali hasil dataset OPD.</p></div><Link className="button primary" to="/datasets/new"><PlusIcon size={16} /> Assessment baru</Link></div>
+    <section className="panel dataset-panel" aria-labelledby="dataset-title"><header className="panel-header dataset-toolbar"><div><h2 id="dataset-title">Semua dataset</h2><p>{datasets ? `${datasets.length.toLocaleString("id-ID")} assessment tersimpan` : "Memuat riwayat…"}</p></div><div className="filter-controls"><label className="search-field"><span className="sr-only">Cari dataset</span><SearchIcon size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari nama dataset" /></label><label><span className="sr-only">Filter status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="ALL">Semua status</option><option value="PASSED">Lulus</option><option value="NEEDS_CORRECTION">Perlu koreksi</option><option value="PROCESSING">Diproses</option><option value="FAILED">Gagal</option></select></label></div></header>
+      {error ? <div className="feedback error inset" role="alert"><div><strong>Riwayat tidak dapat dimuat</strong><p>{error.message}</p>{error.requestId && <code>ID: {error.requestId}</code>}</div><button className="button secondary" onClick={load}>Coba lagi</button></div> : datasets === null ? <div className="table-skeleton" aria-label="Memuat riwayat"><i /><i /><i /><i /></div> : datasets.length === 0 ? <div className="empty-state"><span aria-hidden="true"><PlusIcon size={20} /></span><h3>Belum ada dataset</h3><p>Mulai dengan CSV, XLSX, XLS, atau sumber Backoffice yang tersedia.</p><Link className="button primary" to="/datasets/new">Mulai assessment</Link></div> : visible.length === 0 ? <div className="empty-state compact"><span aria-hidden="true"><SearchIcon size={20} /></span><h3>Dataset tidak ditemukan</h3><p>Ubah kata pencarian atau filter status.</p><button className="button secondary" onClick={() => { setSearch(""); setStatus("ALL"); }}>Hapus filter</button></div> : <div className="dataset-table" role="table" aria-label="Riwayat assessment"><div className="dataset-table-head" role="row"><span role="columnheader">Dataset</span><span role="columnheader">Format</span><span role="columnheader">Dimensi</span><span role="columnheader">Temuan</span><span role="columnheader">Diunggah</span><span role="columnheader">Status</span><span /></div>{visible.map((item) => <Link className="dataset-table-row" role="row" to={`/datasets/${item.id}`} key={item.id}><span role="cell" className="dataset-identity"><strong>{item.original_filename}</strong><small>{item.source_type === "backoffice_api" ? "Backoffice" : "Unggahan file"}</small></span><span role="cell"><b className="file-chip">{item.file_type.toUpperCase()}</b></span><span role="cell" data-label="Dimensi">{item.row_count.toLocaleString("id-ID")} × {item.column_count}</span><span role="cell" data-label="Temuan">{item.finding_count.toLocaleString("id-ID")}</span><time role="cell" data-label="Diunggah">{date(item.created_at)}</time><span role="cell"><b className={`status-chip ${item.assessment_status === "PASSED" ? "success" : item.status === "FAILED" ? "danger" : item.status === "PROCESSING" ? "neutral" : "warning"}`}>{statusLabel(item)}</b></span><ChevronRightIcon className="row-chevron" size={18} /></Link>)}</div>}
+    </section>
+  </main>;
 }

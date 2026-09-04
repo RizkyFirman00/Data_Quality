@@ -52,3 +52,25 @@ def write_snapshot(parsed: ParsedDataset, root: Path, dataset_id: uuid.UUID) -> 
 
 def json_record(record: dict[str, object], source_row: int) -> dict[str, object]:
     return {"_source_row": source_row, **{key: json_value(value) for key, value in record.items()}}
+
+
+def read_snapshot(root: Path, key: str, page: int = 1, page_size: int = 25) -> tuple[list[dict[str, object]], int]:
+    """Read paginated data from snapshot file. Returns (rows, total_count)."""
+    target = resolve_storage_key(root, key)
+    if not target.exists():
+        return [], 0
+
+    rows: list[dict[str, object]] = []
+    with gzip.open(target, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            data = json.loads(line)
+            source_row = data.get("_source_row")
+            values = data.get("values", {})
+            rows.append({"_source_row": source_row, **values})
+
+    total = len(rows)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return rows[start:end], total

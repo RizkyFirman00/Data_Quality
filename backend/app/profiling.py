@@ -84,6 +84,7 @@ def _numeric_like(value: object) -> bool:
 
 def _role(name: str, inferred_type: str, unique_count: int, value_count: int) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    tokens = set(normalized.split("_"))
     administrative = administrative_column(name)
     if administrative:
         return f"administrative_{administrative[0]}"
@@ -91,12 +92,16 @@ def _role(name: str, inferred_type: str, unique_count: int, value_count: int) ->
         return "categorical"
     if normalized in {"id", "nik", "npsn", "uuid"} or normalized.startswith("kode_") or normalized.endswith("_id"):
         return "identifier"
-    if any(hint in normalized for hint in ("lintang", "bujur", "latitude", "longitude", "wilayah", "kecamatan", "kelurahan")):
-        return "geographic"
+    if tokens & {"lintang", "latitude", "lat"}:
+        return "latitude"
+    if tokens & {"bujur", "longitude", "lon", "lng"}:
+        return "longitude"
     if any(hint in normalized for hint in ("tanggal", "_date", "tgl_")) or inferred_type == "date":
         return "date"
     if any(hint in normalized for hint in ("kategori", "jenis", "status")):
         return "categorical"
+    if tokens & {"persen", "persentase", "percentage", "percent", "pct"}:
+        return "percentage"
     if inferred_type in {"integer", "decimal"}:
         return "numeric"
     if value_count and unique_count <= 50 and unique_count / value_count <= 0.2:

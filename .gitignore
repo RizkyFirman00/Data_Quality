@@ -3,9 +3,16 @@
 .venv/
 __pycache__/
 .pytest_cache/
+.mypy_cache/
 *.py[cod]
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
 storage/*
 !storage/.gitkeep
+.hermes/
+.superpowers/
+*graphify-out/
+output/
+outputs/
+tmp/

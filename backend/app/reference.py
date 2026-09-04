@@ -65,6 +65,13 @@ class AdministrativeUnit:
 
 
 @dataclass(frozen=True)
+class AdministrativeCandidate:
+    unit: AdministrativeUnit
+    distance: int
+    confidence: float
+
+
+@dataclass(frozen=True)
 class AdministrativeReference:
     cities_by_code: Mapping[str, AdministrativeUnit]
     cities_by_name: Mapping[str, AdministrativeUnit]
@@ -73,6 +80,62 @@ class AdministrativeReference:
     villages_by_code: Mapping[str, AdministrativeUnit]
     villages_by_name: Mapping[str, AdministrativeUnit]
     sha256: str
+
+
+def _match_text(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", value.upper())
+
+
+def _edit_distance(left: str, right: str) -> int:
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1]
+                    + (left_character != right_character),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def administrative_candidate(
+    reference: AdministrativeReference,
+    level: str,
+    value: str,
+    *,
+    city_code: str | None = None,
+    district_code: str | None = None,
+    max_distance: int = 2,
+) -> AdministrativeCandidate | None:
+    """Return one hierarchy-compatible master name only when the best match is unique."""
+    index: Mapping[str, AdministrativeUnit] = getattr(
+        reference,
+        f"{level.replace('city', 'cities').replace('district', 'districts').replace('village', 'villages')}_by_name",
+    )
+    source = _match_text(value)
+    ranked: list[tuple[int, AdministrativeUnit]] = []
+    for unit in index.values():
+        if level == "city" and city_code and unit.code != city_code:
+            continue
+        if level == "district" and city_code and unit.parent_code != city_code:
+            continue
+        if level == "village" and district_code and unit.parent_code != district_code:
+            continue
+        if level == "village" and city_code and unit.city_code != city_code:
+            continue
+        distance = _edit_distance(source, _match_text(unit.name))
+        if distance <= max_distance:
+            ranked.append((distance, unit))
+    ranked.sort(key=lambda item: (item[0], item[1].name))
+    if not ranked or len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return None
+    distance, unit = ranked[0]
+    return AdministrativeCandidate(unit, distance, 1.0 - distance * 0.05)
 
 
 @lru_cache(maxsize=None)

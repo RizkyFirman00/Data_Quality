@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import load_workbook
+import xlrd
 
 
 class DatasetParseError(ValueError):
@@ -129,9 +130,11 @@ def _parse_xlsx(
     try:
         for sheet in workbook.worksheets:
             formula_sheet = formula_workbook[sheet.title]
-            if sheet.max_column > max_columns:
+            max_col = sheet.max_column or 0
+            max_row = sheet.max_row or 0
+            if max_col > max_columns:
                 raise DatasetParseError(f"Dataset melebihi batas {max_columns} kolom.")
-            if sheet.max_row * sheet.max_column > max_cells:
+            if max_row * max_col > max_cells:
                 raise DatasetParseError(f"Dataset melebihi batas {max_cells} sel.")
             columns: list[ParsedColumn] | None = None
             records: list[dict[str, object]] = []
@@ -184,6 +187,62 @@ def _parse_xlsx(
     raise DatasetParseError("Workbook tidak memiliki worksheet berisi data.")
 
 
+def _xls_value(cell: xlrd.sheet.Cell, datemode: int) -> object:
+    if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
+        return None
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        try:
+            return xlrd.xldate.xldate_as_datetime(cell.value, datemode)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise DatasetParseError("File XLS memiliki nilai tanggal yang tidak valid.") from exc
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return bool(cell.value)
+    if cell.ctype == xlrd.XL_CELL_ERROR:
+        return xlrd.biffh.error_text_from_code.get(cell.value, f"#ERROR:{cell.value}")
+    if cell.ctype == xlrd.XL_CELL_NUMBER and isinstance(cell.value, float) and cell.value.is_integer():
+        return int(cell.value)
+    return cell.value
+
+
+def _parse_xls(
+    path: Path, max_rows: int, max_columns: int, max_cells: int
+) -> ParsedDataset:
+    try:
+        workbook = xlrd.open_workbook(path, on_demand=True)
+    except (OSError, xlrd.XLRDError) as exc:
+        raise DatasetParseError("File XLS tidak valid, rusak, atau bukan workbook Excel lama.") from exc
+    try:
+        for sheet in workbook.sheets():
+            if sheet.ncols > max_columns:
+                raise DatasetParseError(f"Dataset melebihi batas {max_columns} kolom.")
+            if sheet.nrows * sheet.ncols > max_cells:
+                raise DatasetParseError(f"Dataset melebihi batas {max_cells} sel.")
+            columns: list[ParsedColumn] | None = None
+            records: list[dict[str, object]] = []
+            source_rows: list[int] = []
+            for row_index in range(sheet.nrows):
+                values = [_xls_value(sheet.cell(row_index, index), workbook.datemode) for index in range(sheet.ncols)]
+                if columns is None:
+                    if not any(value is not None for value in values):
+                        continue
+                    columns = _columns(values, max_columns)
+                    continue
+                if not any(value is not None for value in values):
+                    continue
+                if len(records) >= max_rows:
+                    raise DatasetParseError(f"Dataset melebihi batas {max_rows} baris data.")
+                records.append({column.key: value for column, value in zip(columns, values, strict=True)})
+                source_rows.append(row_index + 1)
+            if columns is None:
+                continue
+            if not records:
+                raise DatasetParseError("Worksheet harus memiliki minimal satu baris data.")
+            return ParsedDataset(columns, records, source_rows, sheet.name)
+    finally:
+        workbook.release_resources()
+    raise DatasetParseError("Workbook tidak memiliki worksheet berisi data.")
+
+
 def parse_dataset(
     path: Path,
     original_name: str,
@@ -199,4 +258,6 @@ def parse_dataset(
         return _parse_xlsx(
             path, max_uncompressed_bytes, max_rows, max_columns, max_cells
         )
-    raise DatasetParseError("Format file tidak didukung. Gunakan CSV atau XLSX.")
+    if suffix == ".xls":
+        return _parse_xls(path, max_rows, max_columns, max_cells)
+    raise DatasetParseError("Format file tidak didukung. Gunakan CSV, XLSX, atau XLS.")

@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 
 import pytest
 from openpyxl import Workbook
@@ -213,3 +214,24 @@ def test_xlsx_preserves_array_formula_only_row(tmp_path: Path) -> None:
     parsed = parse_dataset(path, "data.xlsx")
 
     assert parsed.records == [{"hasil": "=1+1"}]
+
+
+def test_xls_fixture_preserves_native_types_sheet_and_source_rows() -> None:
+    path = Path(__file__).parent / "fixtures" / "legacy_sample.xls"
+
+    parsed = parse_dataset(path, "legacy_sample.xls")
+
+    assert parsed.worksheet_name == "DATA LAMA"
+    assert parsed.source_rows == [3, 4]
+    assert parsed.records == [
+        {"nama": "ANI", "tanggal": datetime(2026, 9, 1), "jumlah": 12, "aktif": True},
+        {"nama": "BUDI", "tanggal": datetime(2026, 9, 2), "jumlah": 0, "aktif": False},
+    ]
+
+
+def test_xls_rejects_invalid_binary(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.xls"
+    path.write_bytes(b"not-an-xls")
+
+    with pytest.raises(DatasetParseError, match="tidak valid"):
+        parse_dataset(path, "invalid.xls")

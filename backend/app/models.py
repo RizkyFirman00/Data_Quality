@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -25,10 +25,17 @@ class DatasetStatus(str, enum.Enum):
 
 class Dataset(Base):
     __tablename__ = "datasets"
+    __table_args__ = (
+        CheckConstraint(
+            "assessment_status IS NULL OR assessment_status IN ('PASSED', 'NEEDS_CORRECTION')",
+            name="ck_datasets_assessment_status",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     original_filename: Mapped[str] = mapped_column(String(255))
     source_type: Mapped[str] = mapped_column(String(32), default="file_upload")
+    source_metadata: Mapped[dict[str, object]] = mapped_column(JsonType, default=dict)
     file_type: Mapped[str] = mapped_column(String(8))
     worksheet_name: Mapped[str | None] = mapped_column(String(255))
     original_file_key: Mapped[str | None] = mapped_column(String(500))
@@ -40,6 +47,10 @@ class Dataset(Base):
     finding_count: Mapped[int] = mapped_column(Integer, default=0)
     preview: Mapped[list[dict[str, object]]] = mapped_column(JsonType, default=list)
     failure_message: Mapped[str | None] = mapped_column(Text)
+    assessment_status: Mapped[str | None] = mapped_column(String(32))
+    parent_dataset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     column_profiles: Mapped[list["ColumnProfile"]] = relationship(
@@ -52,6 +63,7 @@ class Dataset(Base):
         cascade="all, delete-orphan",
         order_by=lambda: Finding.position,
     )
+    parent_dataset: Mapped["Dataset | None"] = relationship(remote_side="Dataset.id")
 
     @property
     def finding_summary(self) -> dict[str, dict[str, int]]:
@@ -85,6 +97,12 @@ class ColumnProfile(Base):
 
 class Finding(Base):
     __tablename__ = "findings"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'REVIEWED', 'ACCEPTED', 'DISMISSED')",
+            name="ck_findings_status",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     dataset_id: Mapped[uuid.UUID] = mapped_column(
@@ -104,3 +122,52 @@ class Finding(Base):
     status: Mapped[str] = mapped_column(String(16), default="OPEN")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     dataset: Mapped[Dataset] = relationship(back_populates="findings")
+    audits: Mapped[list["FindingAudit"]] = relationship(
+        back_populates="finding", cascade="all, delete-orphan", order_by="FindingAudit.created_at"
+    )
+
+
+class FindingAudit(Base):
+    __tablename__ = "finding_audits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("findings.id", ondelete="CASCADE"), index=True
+    )
+    previous_status: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16))
+    reviewer: Mapped[str] = mapped_column(String(128), default="REVIEWER LOKAL")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finding: Mapped[Finding] = relationship(back_populates="audits")
+
+
+class LocalUser(Base):
+    __tablename__ = "local_users"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    password_hash: Mapped[str] = mapped_column(String(512))
+    is_active: Mapped[bool] = mapped_column(default=True)
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sessions: Mapped[list["LocalSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class LocalSession(Base):
+    __tablename__ = "local_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_token: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("local_users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user: Mapped[LocalUser] = relationship(back_populates="sessions")

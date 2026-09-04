@@ -58,12 +58,57 @@ class DatasetSummaryResponse(BaseModel):
     duplicate_row_count: int
     finding_count: int
     failure_message: str | None
+    assessment_status: str | None
+    parent_dataset_id: uuid.UUID | None
     created_at: datetime
     completed_at: datetime | None
 
 
 class DatasetDetailResponse(DatasetSummaryResponse):
     preview: list[dict[str, object]]
+    source_metadata: dict[str, object]
     column_profiles: list[ColumnProfileResponse]
     finding_summary: FindingSummaryResponse
     findings: list[FindingResponse]
+
+
+class FindingStatusUpdate(BaseModel):
+    status: str
+    reviewer: str = "REVIEWER LOKAL"
+
+
+class FindingPageResponse(BaseModel):
+    items: list[FindingResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class GlobalFindingResponse(FindingResponse):
+    dataset_id: uuid.UUID
+    dataset_name: str
+    dataset_completed_at: datetime | None
+
+
+class GlobalFindingPageResponse(BaseModel):
+    items: list[GlobalFindingResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class LatestAssessmentResponse(BaseModel):
+    id: uuid.UUID
+    original_filename: str
+    source_type: str
+    completed_at: datetime
+    finding_count: int
+    issue_counts: dict[str, int]
+
+
+class DashboardResponse(BaseModel):
+    total_assessments: int
+    passed_assessments: int
+    needs_correction_assessments: int
+    open_findings: int
+    latest_assessment: LatestAssessmentResponse | None

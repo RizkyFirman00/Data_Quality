@@ -1,8 +1,8 @@
 # Intelligent Data Quality Assessment
 
-Phase 4 menyediakan ingest, profiling, pemeriksaan kualitas struktural, validasi referensi administratif DKI Jakarta, serta validasi format tanggal/periode dan numerik untuk reviewer data. Aplikasi menerima CSV/XLSX, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan preview, karakteristik kolom, evidence, dan rekomendasi.
+Platform ini melengkapi ingest, profiling, pemeriksaan kualitas deterministik dan semantik terbatas, statistik, report, Backoffice API, dan reassessment. Aplikasi menerima CSV/XLSX/XLS atau Backoffice API, mempertahankan file asli, membuat snapshot kerja terpisah, lalu menampilkan evidence dan rekomendasi tanpa mengubah sumber data.
 
-Aplikasi tidak mengubah dataset sumber dan belum memberikan verdict lulus/gagal. Reviewer tetap menjadi pengambil keputusan.
+Aplikasi memberi status assessment berdasarkan temuan severity tinggi, tetapi tidak mengubah dataset sumber. Reviewer tetap menjadi pengambil keputusan atas kebenaran data dan rekomendasi.
 
 ## Pemeriksaan Phase 2–4
 
@@ -39,6 +39,15 @@ Ubah `POSTGRES_PASSWORD` dan bagian password dalam `DATABASE_URL` dengan nilai y
 docker compose up --build -d
 docker compose ps
 ```
+
+Buat akun lokal pertama. Password diminta secara interaktif dan tidak disimpan di shell history:
+
+```bash
+docker compose exec backend python scripts/manage_user.py create \
+  --username admin --display-name "Administrator" --admin
+```
+
+Perintah lain yang tersedia adalah `password`, `enable`, dan `disable`. Mengubah password atau menonaktifkan akun mencabut seluruh session aktif.
 
 Buka:
 
@@ -90,15 +99,42 @@ docker compose exec backend env SAMPLES_DIR=/samples python scripts/smoke_test.p
 | `PREVIEW_ROWS` | `50` | Batas record yang dikirim ke browser |
 | `CORS_ORIGINS` | `http://localhost:5173` | Origin frontend yang diizinkan |
 | `VITE_API_URL` | `http://localhost:8000/api` | Base URL API publik |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | kosong | Endpoint OpenAI-compatible server-side untuk rekomendasi typo |
+| `LLM_MAX_COLUMNS` | `20` | Maksimal profil kolom ambigu dalam satu klasifikasi role |
+| `LLM_MAX_CANDIDATES` | `50` | Maksimal kandidat typo free-text per assessment |
+| `LLM_TIMEOUT_SECONDS` | `10` | Batas panggilan LLM |
+| `AUTH_COOKIE_NAME` | `dq_session` | Nama cookie session lokal |
+| `AUTH_COOKIE_SECURE` | `false` | Set `true` ketika aplikasi dilayani melalui HTTPS |
+| `AUTH_SESSION_HOURS` | `8` | Masa berlaku session server-side |
+| `AUTH_MAX_FAILED_ATTEMPTS` | `5` | Batas kegagalan sebelum akun dikunci sementara |
+| `AUTH_LOCK_MINUTES` | `15` | Durasi penguncian akun |
+| `BACKOFFICE_API_BASE_URL` | kosong | Endpoint Backoffice DataTables-style server-side |
+| `BACKOFFICE_API_TOKEN` | kosong | Bearer token Backoffice, tidak pernah dikirim ke browser |
+| `BACKOFFICE_PAGE_SIZE` | `100` | Ukuran halaman Backoffice |
+| `BACKOFFICE_TIMEOUT_SECONDS` | `10` | Batas panggilan Backoffice |
 
 File pengguna disimpan di `storage/originals/` dengan nama UUID. Snapshot kerja berada di `storage/snapshots/`. Nama file pengguna tidak pernah dipakai sebagai path penyimpanan.
 
-## Batas Phase 4
+## Workflow reviewer dan batas layanan eksternal
 
-- Format resmi: CSV dan XLSX; XLS lama belum didukung.
+- Dashboard menunjukkan ringkasan assessment dan temuan dari assessment terakhir.
+- Temuan dapat dicari/difilter dan ditampilkan read-only sebagai evidence untuk reviewer.
+- Halaman global menyediakan temuan lintas dataset, master referensi wilayah, dan capability server yang aman ditampilkan.
+- Report lengkap tersedia sebagai CSV, XLSX dua-sheet, dan PDF. Reassessment dapat dihubungkan ke assessment sebelumnya lalu dibandingkan sebagai resolved, remaining, atau new.
+- Outlier IQR adalah `STATISTICAL_ANOMALY` (evidence medium), bukan klaim data pasti salah.
+- Koordinat lintang/bujur diperiksa secara deterministik terhadap format angka kanonis dan rentang bumi.
+- Perhitungan persentase dan total dua komponen hanya diperiksa jika minimal lima baris membentuk pola konsisten; urutan pasangan tanggal mulai–selesai diperiksa jika pasangannya tidak ambigu.
+- LLM menerima profil ringkas kolom ambigu dalam satu batch untuk klasifikasi role berkeyakinan minimal 0,90. Setelah itu LLM hanya menerima kandidat typo free-text pendek non-wilayah/non-alamat yang sudah difilter dari nilai dalam kolom yang sama. Jika tidak dikonfigurasi atau gagal, assessment tetap selesai dengan pemeriksaan deterministik.
+- Backoffice memakai endpoint dan token server-side, pagination `start`/`length`, timeout, dan satu retry. Jika belum dikonfigurasi, tombolnya menampilkan error aman.
+- Seluruh UI dan API selain health memerlukan akun lokal. Password memakai Argon2; session dapat dicabut, cookie bersifat `HttpOnly`/`SameSite=Lax`, dan request perubahan memerlukan token CSRF.
+
+## Batas yang tetap disengaja
+
+- Format unggahan: CSV, XLSX, dan XLS BIFF lama. Nilai formula XLS mengikuti cached result yang tersimpan di workbook.
 - Pemrosesan masih sinkron karena target awal kecil. Queue ditambahkan hanya bila pengukuran menunjukkan kebutuhan.
 - Penyimpanan lokal cocok untuk satu host. Object storage diperlukan sebelum menjalankan banyak instance.
-- Belum ada autentikasi; gunakan hanya dalam lingkungan lokal/internal terkontrol.
-- Belum ada fuzzy matching/typo, LLM, koordinat, kalkulasi, statistik, keputusan reviewer, filter findings, atau export laporan. Klasifikasi koordinat dan cross-field ditunda ke Fase 6 agar menggunakan pemahaman semantik LLM, bukan alias header yang rapuh.
+- Relasi kalkulasi domain lain tidak ditebak. Tambahkan hanya setelah ada pola data yang kuat atau metadata aturan bisnis yang nyata.
+- Tidak ada Redis/worker. Pemrosesan tetap sinkron dalam batas baris/kolom/sel yang dikonfigurasi.
+- Autentikasi lokal saat ini memiliki satu tingkat akses aplikasi; flag admin disimpan untuk administrasi akun tetapi belum menjadi role izin terpisah. Gunakan HTTPS dan `AUTH_COOKIE_SECURE=true` sebelum exposure di luar host lokal.
 - Pemeriksaan tanggal hanya mencakup format aktual dan `periode_data` di atas; belum ada metadata jadwal atau inferensi semantik tanggal lain.
 - Findings Phase 2–4 bersifat read-only dan harus diverifikasi reviewer.

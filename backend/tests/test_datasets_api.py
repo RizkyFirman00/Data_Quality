@@ -2,12 +2,15 @@ from io import BytesIO
 from datetime import date
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+from sqlalchemy import CheckConstraint, inspect
 
 import app.datasets as datasets_module
 from app.config import Settings, get_settings
 from app.main import app
+from app.models import Dataset, Finding
 from app.quality import QualityAssessmentError
 
 
@@ -15,7 +18,21 @@ def test_config_exposes_upload_limit(client: TestClient) -> None:
     response = client.get("/api/config")
 
     assert response.status_code == 200
-    assert response.json() == {"max_upload_mb": 1}
+    assert response.json() == {"max_upload_mb": 1, "backoffice_enabled": False, "llm_max_candidates": 50}
+
+
+def test_status_and_verdict_values_are_constrained_by_schema() -> None:
+    def constraints(model: type[object]) -> str:
+        return "\n".join(
+            str(constraint.sqltext)
+            for constraint in inspect(model).local_table.constraints
+            if isinstance(constraint, CheckConstraint)
+        )
+
+    assert "OPEN" in constraints(Finding)
+    assert "DISMISSED" in constraints(Finding)
+    assert "PASSED" in constraints(Dataset)
+    assert "NEEDS_CORRECTION" in constraints(Dataset)
 
 
 def test_upload_list_and_detail_dataset(client: TestClient) -> None:
@@ -39,6 +56,162 @@ def test_upload_list_and_detail_dataset(client: TestClient) -> None:
     assert detail.status_code == 200
     assert detail.json()["preview"][0] == {"_source_row": 2, "nama": "ANI", "jumlah": "0"}
     assert detail.json()["column_profiles"][1]["inferred_type"] == "integer"
+
+
+def test_backoffice_failure_persists_only_safe_message(client: TestClient) -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        database_url="sqlite://",
+        backoffice_api_base_url="https://backoffice.test",
+        backoffice_api_token="secret-token",
+    )
+
+    response = client.post("/api/backoffice-assessments")
+
+    assert response.status_code == 422
+    failed = client.get("/api/datasets").json()[0]
+    assert failed["failure_message"] == "Backoffice assessment gagal."
+    assert "secret-token" not in str(failed)
+
+
+def test_reviewer_status_dashboard_report_and_comparison(client: TestClient) -> None:
+    first = client.post(
+        "/api/datasets",
+        files={"file": ("first.csv", b"nama\nAni\n", "text/csv")},
+    ).json()
+    finding_id = first["findings"][0]["id"]
+
+    changed = client.patch(f"/api/findings/{finding_id}", json={"status": "DISMISSED"})
+    assert changed.status_code == 200
+    assert changed.json()["status"] == "DISMISSED"
+    assert client.get("/api/dashboard").json()["passed_assessments"] == 1
+    report = client.get(
+        f"/api/datasets/{first['id']}/report?format=csv&status=OPEN"
+    ).text
+    assert "Ringkasan assessment" in report
+    assert "Baris,Kolom,Temuan,Severity" in report
+    assert "INVALID_CASE" not in report
+
+    second = client.post(
+        "/api/datasets",
+        data={"parent_dataset_id": first["id"]},
+        files={"file": ("second.csv", b"nama\nANI\n", "text/csv")},
+    ).json()
+    comparison = client.get(f"/api/datasets/{second['id']}/comparison").json()
+    assert comparison["available"] is True
+    assert comparison["resolved"] == [finding_id]
+
+
+def test_reports_include_summary_detail_and_pdf(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets",
+        files={"file": ("laporan.csv", b"nama\nAni\n", "text/csv")},
+    ).json()
+
+    xlsx = client.get(f"/api/datasets/{dataset['id']}/report?format=xlsx")
+    pdf = client.get(f"/api/datasets/{dataset['id']}/report?format=pdf")
+
+    workbook = __import__("openpyxl").load_workbook(BytesIO(xlsx.content))
+    assert workbook.sheetnames == ["Ringkasan", "Temuan"]
+    assert workbook["Ringkasan"]["A1"].value == "Ringkasan assessment"
+    assert workbook["Temuan"]["A1"].value == "Baris"
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF-")
+    assert len(pdf.content) > 2000
+
+
+def test_dashboard_reports_findings_from_latest_completed_assessment_only(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/datasets",
+        files={"file": ("first.csv", b"nama\nAni\n", "text/csv")},
+    )
+    latest = client.post(
+        "/api/datasets",
+        files={"file": ("latest.csv", b"catatan\n-\n", "text/csv")},
+    ).json()
+
+    dashboard = client.get("/api/dashboard").json()
+
+    assert dashboard["latest_assessment"] == {
+        "id": latest["id"],
+        "original_filename": "latest.csv",
+        "source_type": "file_upload",
+        "completed_at": latest["completed_at"],
+        "finding_count": 1,
+        "issue_counts": {"INVALID_PLACEHOLDER": 1},
+    }
+
+
+def test_findings_are_paginated_and_keep_source_row_order(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets",
+        files={
+            "file": (
+                "ordered.csv",
+                b"nama,catatan\nANI,N/A\nAni,-\n,VALID\n",
+                "text/csv",
+            )
+        },
+    ).json()
+
+    first_page = client.get(
+        f"/api/datasets/{dataset['id']}/findings?page=1&page_size=2"
+    ).json()
+    second_page = client.get(
+        f"/api/datasets/{dataset['id']}/findings?page=2&page_size=2"
+    ).json()
+    filtered = client.get(
+        f"/api/datasets/{dataset['id']}/findings?severity=MEDIUM&page_size=50"
+    ).json()
+
+    assert first_page["total"] == 3
+    assert first_page["page"] == 1
+    assert first_page["page_size"] == 2
+    assert [(item["row"], item["column"]) for item in first_page["items"]] == [
+        (3, "nama"),
+        (3, "catatan"),
+    ]
+    assert [(item["row"], item["column"]) for item in second_page["items"]] == [
+        (4, "nama")
+    ]
+    assert {item["issue_type"] for item in filtered["items"]} == {
+        "INVALID_CASE",
+        "INVALID_PLACEHOLDER",
+    }
+
+
+def test_global_findings_are_read_only_searchable_and_include_dataset(client: TestClient) -> None:
+    dataset = client.post(
+        "/api/datasets",
+        files={"file": ("lintas.csv", b"nama\nAni\n", "text/csv")},
+    ).json()
+
+    response = client.get("/api/findings?search=lintas&page_size=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["dataset_id"] == dataset["id"]
+    assert body["items"][0]["dataset_name"] == "lintas.csv"
+    assert body["items"][0]["row"] == 2
+
+
+def test_reference_data_and_safe_settings_are_api_backed(client: TestClient) -> None:
+    reference = client.get("/api/reference-data?search=SUNGAI%20BAMBU&page_size=10")
+    settings = client.get("/api/settings")
+
+    assert reference.status_code == 200
+    assert reference.json()["total"] == 1
+    assert reference.json()["items"][0]["village_name"] == "SUNGAI BAMBU"
+    assert reference.json()["summary"]["villages"] == 267
+    assert settings.status_code == 200
+    assert settings.json()["limits"]["upload_mb"] == 1
+    assert settings.json()["semantic"]["enabled"] is False
+    assert settings.json()["formats"]["upload"] == ["CSV", "XLSX", "XLS"]
+    assert settings.json()["formats"]["report"] == ["CSV", "XLSX", "PDF"]
+    assert "api_key" not in str(settings.json()).lower()
 
 
 def test_upload_runs_structural_quality_checks(client: TestClient) -> None:
@@ -150,6 +323,22 @@ def test_upload_xlsx_uses_the_real_file_type_while_staged(client: TestClient) ->
 
     assert response.status_code == 201
     assert response.json()["worksheet_name"] == "Sheet"
+
+
+def test_upload_legacy_xls_uses_real_biff_fixture(client: TestClient) -> None:
+    content = (Path(__file__).parent / "fixtures" / "legacy_sample.xls").read_bytes()
+
+    response = client.post(
+        "/api/datasets",
+        files={"file": ("legacy_sample.xls", content, "application/vnd.ms-excel")},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["file_type"] == "xls"
+    assert body["worksheet_name"] == "DATA LAMA"
+    assert body["row_count"] == 2
+    assert body["preview"][0]["tanggal"] == "2026-09-01T00:00:00"
 
 
 def test_upload_xlsx_serializes_native_date_values(client: TestClient) -> None:

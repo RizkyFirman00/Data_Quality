@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
@@ -14,9 +14,10 @@ from .ingestion import DatasetParseError, parse_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
 from .normalization import write_snapshot
 from .profiling import profile_dataset
-from .quality import QualityAssessmentError, quality_findings
+from .quality import QualityAssessmentError, ordered_findings, quality_findings
 from .reference import ReferenceDataError, load_administrative_reference
 from .schemas import DatasetDetailResponse, DatasetSummaryResponse
+from .semantic import apply_semantic_roles, semantic_analysis
 from .storage import delete_storage_key, persist_original
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -53,6 +54,7 @@ async def _stage_upload(upload: UploadFile, target: Path, limit: int) -> None:
 @router.post("", response_model=DatasetDetailResponse, status_code=status.HTTP_201_CREATED)
 async def upload_dataset(
     file: UploadFile = File(...),
+    parent_dataset_id: uuid.UUID | None = Form(None),
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
 ) -> Dataset:
@@ -67,6 +69,7 @@ async def upload_dataset(
         source_type="file_upload",
         file_type=suffix.removeprefix(".") or "unknown",
         status=DatasetStatus.PROCESSING,
+        parent_dataset_id=parent_dataset_id,
     )
     session.add(dataset)
     session.commit()
@@ -75,8 +78,8 @@ async def upload_dataset(
     original_key: str | None = None
     snapshot_key: str | None = None
     try:
-        if suffix not in {".csv", ".xlsx"}:
-            raise DatasetParseError("Format file tidak didukung. Gunakan CSV atau XLSX.")
+        if suffix not in {".csv", ".xlsx", ".xls"}:
+            raise DatasetParseError("Format file tidak didukung. Gunakan CSV, XLSX, atau XLS.")
         await _stage_upload(file, staged, config.max_upload_mb * 1024 * 1024)
         parsed = await run_in_threadpool(
             parse_dataset,
@@ -97,9 +100,14 @@ async def upload_dataset(
         reference = await run_in_threadpool(
             load_administrative_reference, config.master_reference_path
         )
+        semantic = await run_in_threadpool(semantic_analysis, parsed, profile, config)
+        profile = apply_semantic_roles(profile, semantic.roles)
         finding_results = await run_in_threadpool(
             quality_findings, parsed, profile, reference, config.max_findings
         )
+        finding_results = ordered_findings(parsed, finding_results + semantic.findings)
+        if len(finding_results) > config.max_findings:
+            raise QualityAssessmentError("Dataset menghasilkan terlalu banyak temuan kualitas.")
         dataset.original_file_key = original_key
         dataset.snapshot_key = snapshot_key
         dataset.worksheet_name = parsed.worksheet_name
@@ -111,11 +119,20 @@ async def upload_dataset(
             ColumnProfile(**result.__dict__) for result in profile.columns
         ]
         dataset.finding_count = len(finding_results)
+        dataset.source_metadata = {
+            "semantic_available": semantic.available,
+            "semantic_roles": semantic.roles,
+        }
         dataset.findings = [
             Finding(position=position, **result.__dict__)
             for position, result in enumerate(finding_results)
         ]
         dataset.status = DatasetStatus.COMPLETED
+        dataset.assessment_status = (
+            "NEEDS_CORRECTION"
+            if any(finding.severity == "HIGH" and finding.status == "OPEN" for finding in finding_results)
+            else "PASSED"
+        )
         dataset.completed_at = datetime.now(timezone.utc)
         session.commit()
         return _load_dataset(session, dataset.id)

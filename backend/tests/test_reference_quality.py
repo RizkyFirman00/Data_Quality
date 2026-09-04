@@ -37,6 +37,62 @@ def test_wilayah_maps_only_to_city_reference() -> None:
     assert REFERENCE.sha256[:12] in findings[0].detector
 
 
+def test_close_administrative_name_gets_deterministic_typo_candidate() -> None:
+    parsed = dataset([{"wilayah": "KOTA ADM. JAKRTA BARAT"}])
+
+    finding = reference_findings(parsed, REFERENCE)[0]
+
+    assert finding.issue_type == "POTENTIAL_TYPO"
+    assert finding.severity == "MEDIUM"
+    assert finding.expected_value == "KOTA ADM. JAKARTA BARAT"
+    assert finding.confidence == 0.95
+    assert finding.detector.startswith("deterministic:reference-fuzzy-v1:")
+    assert "jarak edit 1" in finding.evidence
+
+
+def test_normalized_administrative_name_recommends_canonical_master_value() -> None:
+    parsed = dataset([{"wilayah": "KOTA ADM JAKARTA BARAT"}])
+
+    finding = reference_findings(parsed, REFERENCE)[0]
+
+    assert finding.issue_type == "POTENTIAL_TYPO"
+    assert finding.expected_value == "KOTA ADM. JAKARTA BARAT"
+    assert "jarak edit 0" in finding.evidence
+
+
+def test_reference_fuzzy_matching_does_not_guess_codes_or_distant_names() -> None:
+    parsed = dataset(
+        [
+            {"kode_kecamatan": "31.72.99", "nama_kelurahan": "BUKAN KELURAHAN"},
+        ]
+    )
+
+    findings = reference_findings(parsed, REFERENCE)
+
+    assert [(item.column, item.issue_type, item.expected_value) for item in findings] == [
+        ("kode_kecamatan", "INVALID_REFERENCE", None),
+        ("nama_kelurahan", "INVALID_REFERENCE", None),
+    ]
+
+
+def test_village_typo_candidate_respects_known_hierarchy() -> None:
+    parsed = dataset(
+        [
+            {
+                "wilayah": "KOTA ADM. JAKARTA UTARA",
+                "kecamatan": "TANJUNG PRIOK",
+                "kelurahan": "SUNGA BAMBU",
+            }
+        ]
+    )
+
+    finding = reference_findings(parsed, REFERENCE)[0]
+
+    assert finding.column == "kelurahan"
+    assert finding.issue_type == "POTENTIAL_TYPO"
+    assert finding.expected_value == "SUNGAI BAMBU"
+
+
 def test_valid_city_and_district_with_wrong_hierarchy_are_flagged() -> None:
     parsed = dataset(
         [

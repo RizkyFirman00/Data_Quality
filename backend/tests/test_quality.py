@@ -3,7 +3,8 @@ from datetime import date
 import pytest
 
 from app.ingestion import ParsedColumn, ParsedDataset
-from app.quality import QualityAssessmentError, structural_findings
+from app.profiling import profile_dataset
+from app.quality import QualityAssessmentError, statistical_findings, structural_findings
 
 
 def dataset(
@@ -114,3 +115,14 @@ def test_structural_findings_rejects_before_exceeding_limit() -> None:
 
     with pytest.raises(QualityAssessmentError, match="1 temuan"):
         structural_findings(parsed, max_findings=1)
+
+
+def test_iqr_reports_numeric_outlier_as_potential_anomaly() -> None:
+    parsed = dataset([{"nilai": value} for value in [1, 2, 2, 3, 3, 4, 4, 5, 100]])
+
+    findings = statistical_findings(parsed, profile_dataset(parsed))
+
+    assert [(item.row, item.issue_type, item.severity) for item in findings] == [
+        (10, "STATISTICAL_ANOMALY", "MEDIUM")
+    ]
+    assert findings[0].original_value == 100

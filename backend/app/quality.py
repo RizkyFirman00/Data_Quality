@@ -1,13 +1,22 @@
 import math
 import re
+import statistics
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from itertools import combinations, permutations
 from typing import Mapping
 
-from .ingestion import ParsedDataset
+from .ingestion import ParsedColumn, ParsedDataset
 from .normalization import json_key, json_value
 from .profiling import DatasetProfile
-from .reference import AdministrativeReference, AdministrativeUnit, administrative_column
+from .reference import (
+    AdministrativeReference,
+    AdministrativeUnit,
+    administrative_candidate,
+    administrative_column,
+)
 
 
 class QualityAssessmentError(ValueError):
@@ -44,7 +53,13 @@ ISSUE_ORDER = {
     "INVALID_REFERENCE": 4,
     "INVALID_HIERARCHY": 5,
     "INVALID_DATE_FORMAT": 6,
-    "FORMAT_ERROR": 7,
+    "INVALID_COORDINATE": 7,
+    "FORMAT_ERROR": 8,
+    "CALCULATION_MISMATCH": 9,
+    "CROSS_FIELD_MISMATCH": 10,
+    "STATISTICAL_ANOMALY": 11,
+    "POTENTIAL_TYPO": 12,
+    "SEMANTIC_MISMATCH": 13,
 }
 
 
@@ -151,6 +166,97 @@ def _date_column_kind(name: str, candidate_role: str) -> str | None:
     ):
         return "date"
     return None
+
+
+def _number(value: object) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return Decimal(str(value))
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[+-]?[0-9]+(?:\.[0-9]+)?", value
+    ):
+        return None
+    try:
+        parsed = Decimal(value)
+        return parsed if parsed.is_finite() else None
+    except InvalidOperation:
+        return None
+
+
+def _display_number(value: Decimal) -> int | str:
+    normalized = value.normalize()
+    return (
+        int(normalized)
+        if normalized == normalized.to_integral()
+        else format(normalized, "f")
+    )
+
+
+def _coordinate_kind(name: str, candidate_role: str) -> str | None:
+    if candidate_role in {"latitude", "longitude"}:
+        return candidate_role
+    tokens = set(re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_").split("_"))
+    if tokens & {"lintang", "latitude", "lat"}:
+        return "latitude"
+    if tokens & {"bujur", "longitude", "lon", "lng"}:
+        return "longitude"
+    return None
+
+
+def coordinate_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    findings: list[FindingResult] = []
+
+    def add(finding: FindingResult) -> None:
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(finding)
+
+    bounds = {
+        "latitude": (Decimal("-90"), Decimal("90"), "-90 sampai 90"),
+        "longitude": (Decimal("-180"), Decimal("180"), "-180 sampai 180"),
+    }
+    for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
+        kind = _coordinate_kind(column.display_name, column_profile.candidate_role)
+        if kind is None:
+            continue
+        minimum, maximum, expected_range = bounds[kind]
+        for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+            value = record.get(column.key)
+            if value is None or isinstance(value, str) and (
+                not value.strip() or value in {"-", "N/A"}
+            ):
+                continue
+            parsed_number = _number(value)
+            if parsed_number is not None and minimum <= parsed_number <= maximum:
+                continue
+            expected: object = expected_range
+            evidence = f"Nilai {kind} harus berupa angka dalam rentang {expected_range}."
+            if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+,[0-9]+", value):
+                candidate = _number(value.replace(",", "."))
+                if candidate is not None and minimum <= candidate <= maximum:
+                    expected = value.replace(",", ".")
+                    evidence = "Koordinat harus menggunakan titik sebagai pemisah desimal."
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=column.display_name,
+                    issue_type="INVALID_COORDINATE",
+                    severity="HIGH",
+                    original_value=json_value(value),
+                    expected_value=expected,
+                    evidence=evidence,
+                    recommendation=f"Gunakan {expected} setelah memverifikasi sumber OPD.",
+                    detector="deterministic:coordinate-v1",
+                )
+            )
+    return ordered_findings(parsed, findings)
 
 
 def date_findings(
@@ -280,7 +386,7 @@ def numeric_findings(
 
     expected = "Angka ASCII dengan titik desimal"
     for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
-        if column_profile.candidate_role != "numeric" or _date_column_kind(
+        if column_profile.candidate_role not in {"numeric", "percentage"} or _date_column_kind(
             column.display_name, column_profile.candidate_role
         ):
             continue
@@ -311,6 +417,300 @@ def numeric_findings(
     return ordered_findings(parsed, findings)
 
 
+def _supported_calculation(
+    parsed: ParsedDataset,
+    result_key: str,
+    input_keys: tuple[str, str],
+    calculate: Callable[[Decimal, Decimal], Decimal | None],
+) -> tuple[float, list[tuple[int, object, Decimal]]] | None:
+    compared: list[tuple[int, object, Decimal, bool]] = []
+    for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+        actual = _number(record.get(result_key))
+        left = _number(record.get(input_keys[0]))
+        right = _number(record.get(input_keys[1]))
+        if actual is None or left is None or right is None:
+            continue
+        try:
+            expected = calculate(left, right)
+        except ArithmeticError:
+            continue
+        if expected is None:
+            continue
+        tolerance = max(Decimal("0.01"), abs(expected) * Decimal("0.0001"))
+        compared.append(
+            (source_row, record[result_key], expected, abs(actual - expected) <= tolerance)
+        )
+    if len(compared) < 5:
+        return None
+    matches = sum(item[3] for item in compared)
+    confidence = matches / len(compared)
+    if confidence < 0.8:
+        return None
+    return confidence, [
+        (source_row, actual, expected)
+        for source_row, actual, expected, matches in compared
+        if not matches
+    ]
+
+
+def calculation_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    findings: list[FindingResult] = []
+
+    def add(finding: FindingResult) -> None:
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(finding)
+
+    numeric = [
+        column
+        for column, column_profile in zip(parsed.columns, profile.columns, strict=True)
+        if column_profile.candidate_role in {"numeric", "percentage"}
+        and _date_column_kind(column.display_name, column_profile.candidate_role) is None
+        and _coordinate_kind(column.display_name, column_profile.candidate_role) is None
+    ]
+    roles = {
+        column.key: column_profile.candidate_role
+        for column, column_profile in zip(parsed.columns, profile.columns, strict=True)
+    }
+
+    def best_relation(candidates: list[tuple[float, str, str, list[tuple[int, object, Decimal]]]]):
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if not candidates or len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+            return None
+        return candidates[0]
+
+    for result in (column for column in numeric if roles[column.key] == "percentage"):
+        candidates = []
+        for numerator, denominator in permutations(
+            [column for column in numeric if column.key != result.key], 2
+        ):
+            relation = _supported_calculation(
+                parsed,
+                result.key,
+                (numerator.key, denominator.key),
+                lambda realized, target: (
+                    (realized / target * 100).quantize(Decimal("0.01"), ROUND_HALF_UP)
+                    if target != 0
+                    else None
+                ),
+            )
+            if relation:
+                candidates.append(
+                    (relation[0], numerator.display_name, denominator.display_name, relation[1])
+                )
+        selected = best_relation(candidates)
+        if not selected:
+            continue
+        confidence, numerator_name, denominator_name, mismatches = selected
+        for source_row, actual, expected in mismatches:
+            expected_value = _display_number(expected)
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=result.display_name,
+                    issue_type="CALCULATION_MISMATCH",
+                    severity="HIGH",
+                    original_value=json_value(actual),
+                    expected_value=expected_value,
+                    evidence=(
+                        f"Mayoritas baris mengikuti {result.display_name} = "
+                        f"{numerator_name} / {denominator_name} × 100."
+                    ),
+                    recommendation=f"Verifikasi nilai {expected_value} terhadap sumber OPD.",
+                    confidence=confidence,
+                    detector="deterministic:calculation-v1",
+                )
+            )
+
+    for result in numeric:
+        tokens = set(
+            re.sub(r"[^a-z0-9]+", "_", result.display_name.lower()).strip("_").split("_")
+        )
+        if "total" not in tokens:
+            continue
+        candidates = []
+        components = [
+            column
+            for column in numeric
+            if column.key != result.key and roles[column.key] != "percentage"
+        ]
+        for left, right in combinations(components, 2):
+            relation = _supported_calculation(
+                parsed, result.key, (left.key, right.key), lambda a, b: a + b
+            )
+            if relation:
+                candidates.append(
+                    (relation[0], left.display_name, right.display_name, relation[1])
+                )
+        selected = best_relation(candidates)
+        if not selected:
+            continue
+        confidence, left_name, right_name, mismatches = selected
+        for source_row, actual, expected in mismatches:
+            expected_value = _display_number(expected)
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=result.display_name,
+                    issue_type="CALCULATION_MISMATCH",
+                    severity="HIGH",
+                    original_value=json_value(actual),
+                    expected_value=expected_value,
+                    evidence=(
+                        f"Mayoritas baris mengikuti {result.display_name} = "
+                        f"{left_name} + {right_name}."
+                    ),
+                    recommendation=f"Verifikasi nilai {expected_value} terhadap sumber OPD.",
+                    confidence=confidence,
+                    detector="deterministic:calculation-v1",
+                )
+            )
+
+    return ordered_findings(parsed, findings)
+
+
+def cross_field_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    date_columns: list[tuple[ParsedColumn, str]] = []
+    start_tokens = {"awal", "mulai", "start", "kejadian"}
+    end_tokens = {"akhir", "selesai", "end", "penanganan"}
+    for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
+        if _date_column_kind(column.display_name, column_profile.candidate_role) != "date":
+            continue
+        tokens = set(
+            re.sub(r"[^a-z0-9]+", "_", column.display_name.lower()).strip("_").split("_")
+        )
+        starts_here = any(
+            token in start_tokens
+            or any(token.startswith(marker) or token.endswith(marker) for marker in start_tokens)
+            for token in tokens
+        )
+        ends_here = any(
+            token in end_tokens
+            or any(token.startswith(marker) or token.endswith(marker) for marker in end_tokens)
+            for token in tokens
+        )
+        phase = "start" if starts_here and not ends_here else "end" if ends_here and not starts_here else ""
+        if phase:
+            date_columns.append((column, phase))
+    starts = [item[0] for item in date_columns if item[1] == "start"]
+    ends = [item[0] for item in date_columns if item[1] == "end"]
+    if len(starts) != 1 or len(ends) != 1:
+        return []
+
+    start, end = starts[0], ends[0]
+    findings: list[FindingResult] = []
+    for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+        start_text, end_text = str(record.get(start.key)), str(record.get(end.key))
+        if not re.fullmatch(r"[0-9]{8}", start_text) or not re.fullmatch(
+            r"[0-9]{8}", end_text
+        ):
+            continue
+        try:
+            start_date = datetime.strptime(start_text, "%Y%m%d").date()
+            end_date = datetime.strptime(end_text, "%Y%m%d").date()
+        except ValueError:
+            continue
+        if end_date >= start_date:
+            continue
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(
+            FindingResult(
+                row=source_row,
+                column=end.display_name,
+                issue_type="CROSS_FIELD_MISMATCH",
+                severity="HIGH",
+                original_value=json_value(record.get(end.key)),
+                expected_value=start_text,
+                evidence=(
+                    f"{end.display_name} lebih awal daripada {start.display_name} "
+                    "pada baris yang sama."
+                ),
+                recommendation=(
+                    f"Gunakan tanggal minimal {start_text} setelah memverifikasi sumber OPD."
+                ),
+                detector="deterministic:cross-field-v1",
+            )
+        )
+    return ordered_findings(parsed, findings)
+
+
+def statistical_findings(
+    parsed: ParsedDataset,
+    profile: DatasetProfile,
+    max_findings: int = 10_000,
+) -> list[FindingResult]:
+    """Report IQR outliers in profiled numeric columns as reviewer evidence."""
+    findings: list[FindingResult] = []
+
+    def add(finding: FindingResult) -> None:
+        if len(findings) >= max_findings:
+            raise _finding_limit_error(max_findings)
+        findings.append(finding)
+
+    def number(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value) if math.isfinite(value) else None
+        if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", value):
+            return float(value)
+        return None
+
+    for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
+        if column_profile.candidate_role != "numeric" or _date_column_kind(
+            column.display_name, column_profile.candidate_role
+        ):
+            continue
+        values = [
+            (source_row, value, parsed_number)
+            for record, source_row in zip(parsed.records, parsed.source_rows, strict=True)
+            if (value := record.get(column.key)) is not None
+            if (parsed_number := number(value)) is not None
+        ]
+        if len(values) < 8:
+            continue
+        ordered = sorted(item[2] for item in values)
+        midpoint = len(ordered) // 2
+        lower = ordered[:midpoint]
+        upper = ordered[midpoint + (len(ordered) % 2) :]
+        q1 = statistics.median(lower)
+        q3 = statistics.median(upper)
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        minimum, maximum = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        for source_row, value, parsed_number in values:
+            if minimum <= parsed_number <= maximum:
+                continue
+            add(
+                FindingResult(
+                    row=source_row,
+                    column=column.display_name,
+                    issue_type="STATISTICAL_ANOMALY",
+                    severity="MEDIUM",
+                    original_value=json_value(value),
+                    expected_value=None,
+                    evidence=(
+                        f"Nilai {parsed_number:g} berada di luar rentang IQR "
+                        f"{minimum:g}–{maximum:g}."
+                    ),
+                    recommendation="Verifikasi nilai ekstrem ini terhadap sumber OPD.",
+                    confidence=0.8,
+                    detector="deterministic:iqr-v1",
+                )
+            )
+    return ordered_findings(parsed, findings)
+
+
 def _reference_index(
     reference: AdministrativeReference, level: str, value_kind: str
 ) -> Mapping[str, AdministrativeUnit]:
@@ -336,6 +736,35 @@ def reference_findings(
         "village": "kelurahan",
     }
     for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+        known: dict[str, AdministrativeUnit] = {}
+        ambiguous_known: set[str] = set()
+        for column in parsed.columns:
+            classification = administrative_column(column.display_name)
+            if not classification:
+                continue
+            level, value_kind = classification
+            value = record.get(column.key)
+            if value is None or isinstance(value, str) and (
+                not value.strip() or value in {"-", "N/A"}
+            ):
+                continue
+            lookup = (
+                value.upper()
+                if value_kind == "name" and isinstance(value, str)
+                else value
+            )
+            unit = _reference_index(reference, level, value_kind).get(  # type: ignore[arg-type]
+                lookup
+            )
+            if not unit:
+                continue
+            if level in known and known[level].code != unit.code:
+                ambiguous_known.add(level)
+            else:
+                known[level] = unit
+        for level in ambiguous_known:
+            known.pop(level, None)
+
         resolved: dict[
             str, tuple[object, AdministrativeUnit, str, str]
         ] = {}
@@ -355,17 +784,63 @@ def reference_findings(
             unit = index.get(lookup)  # type: ignore[arg-type]
             if unit is None:
                 label = level_labels[level]
+                city = known.get("city")
+                district = known.get("district")
+                village = known.get("village")
+                city_code = (
+                    city.code
+                    if city
+                    else district.parent_code
+                    if district
+                    else village.city_code
+                    if village
+                    else None
+                )
+                district_code = (
+                    district.code
+                    if district
+                    else village.parent_code
+                    if village
+                    else None
+                )
+                candidate = (
+                    administrative_candidate(
+                        reference,
+                        level,
+                        value,
+                        city_code=city_code,
+                        district_code=district_code,
+                    )
+                    if value_kind == "name" and isinstance(value, str)
+                    else None
+                )
                 add(
                     FindingResult(
                         row=source_row,
                         column=column.display_name,
-                        issue_type="INVALID_REFERENCE",
-                        severity="HIGH",
+                        issue_type=(
+                            "POTENTIAL_TYPO" if candidate else "INVALID_REFERENCE"
+                        ),
+                        severity="MEDIUM" if candidate else "HIGH",
                         original_value=json_value(value),
-                        expected_value=None,
-                        evidence=f"Nilai tidak ditemukan pada referensi {label} versi {reference.sha256[:12]}.",
-                        recommendation=f"Verifikasi nilai terhadap master {label} DKI Jakarta.",
-                        detector=detector,
+                        expected_value=candidate.unit.name if candidate else None,
+                        evidence=(
+                            f"Kandidat master {candidate.unit.name} memiliki jarak edit "
+                            f"{candidate.distance} dan sesuai dengan hierarki yang diketahui."
+                            if candidate
+                            else f"Nilai tidak ditemukan pada referensi {label} versi {reference.sha256[:12]}."
+                        ),
+                        recommendation=(
+                            f"Gunakan {candidate.unit.name} hanya setelah verifikasi reviewer."
+                            if candidate
+                            else f"Verifikasi nilai terhadap master {label} DKI Jakarta."
+                        ),
+                        confidence=candidate.confidence if candidate else 1.0,
+                        detector=(
+                            f"deterministic:reference-fuzzy-v1:{reference.sha256[:12]}"
+                            if candidate
+                            else detector
+                        ),
                     )
                 )
                 continue
@@ -448,7 +923,7 @@ def quality_findings(
             profile,
             max_findings - len(structural) - len(reference_results),
         )
-        numeric_results = numeric_findings(
+        coordinate_results = coordinate_findings(
             parsed,
             profile,
             max_findings
@@ -456,8 +931,58 @@ def quality_findings(
             - len(reference_results)
             - len(date_results),
         )
+        numeric_results = numeric_findings(
+            parsed,
+            profile,
+            max_findings
+            - len(structural)
+            - len(reference_results)
+            - len(date_results)
+            - len(coordinate_results),
+        )
+        calculation_results = calculation_findings(
+            parsed,
+            profile,
+            max_findings
+            - len(structural)
+            - len(reference_results)
+            - len(date_results)
+            - len(coordinate_results)
+            - len(numeric_results),
+        )
+        cross_field_results = cross_field_findings(
+            parsed,
+            profile,
+            max_findings
+            - len(structural)
+            - len(reference_results)
+            - len(date_results)
+            - len(coordinate_results)
+            - len(numeric_results)
+            - len(calculation_results),
+        )
+        statistical_results = statistical_findings(
+            parsed,
+            profile,
+            max_findings
+            - len(structural)
+            - len(reference_results)
+            - len(date_results)
+            - len(coordinate_results)
+            - len(numeric_results)
+            - len(calculation_results)
+            - len(cross_field_results),
+        )
     except QualityAssessmentError as exc:
         raise _finding_limit_error(max_findings) from exc
     return ordered_findings(
-        parsed, structural + reference_results + date_results + numeric_results
+        parsed,
+        structural
+        + reference_results
+        + date_results
+        + coordinate_results
+        + numeric_results
+        + calculation_results
+        + cross_field_results
+        + statistical_results,
     )
