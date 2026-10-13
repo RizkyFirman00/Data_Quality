@@ -59,8 +59,17 @@ class DatasetSummaryResponse(BaseModel):
     failure_message: str | None
     assessment_status: str | None
     parent_dataset_id: uuid.UUID | None
+    owner_id: uuid.UUID | None = None
+    owner_display_name: str | None = None
     created_at: datetime
     completed_at: datetime | None
+
+
+class DatasetPageResponse(BaseModel):
+    items: list[DatasetSummaryResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 class DatasetDetailResponse(DatasetSummaryResponse):

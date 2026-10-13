@@ -3,12 +3,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, get_settings
+from .auth import AuthContext, require_user
+from .dataset_access import dataset_scope
 from .database import get_session
 from .ingestion import DatasetParseError, parse_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
@@ -22,7 +25,7 @@ from .quality import (
     quality_findings,
 )
 from .reference import ReferenceDataError, load_administrative_reference
-from .schemas import DatasetDetailResponse, DatasetPreviewResponse, DatasetSummaryResponse
+from .schemas import DatasetDetailResponse, DatasetPageResponse, DatasetPreviewResponse, DatasetSummaryResponse
 from .semantic import (
     apply_action_summaries,
     apply_semantic_roles,
@@ -35,11 +38,11 @@ router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 logger = logging.getLogger(__name__)
 
 
-def _load_dataset(session: Session, dataset_id: uuid.UUID) -> Dataset:
+def _load_dataset(session: Session, dataset_id: uuid.UUID, context: AuthContext) -> Dataset:
     dataset = session.scalar(
         select(Dataset)
-        .options(selectinload(Dataset.column_profiles), selectinload(Dataset.findings))
-        .where(Dataset.id == dataset_id)
+        .options(selectinload(Dataset.column_profiles), selectinload(Dataset.findings), selectinload(Dataset.owner))
+        .where(Dataset.id == dataset_id, *dataset_scope(context))
     )
     if not dataset:
         raise HTTPException(status_code=404, detail={"message": "Dataset tidak ditemukan."})
@@ -128,9 +131,12 @@ async def upload_dataset(
     parent_dataset_id: uuid.UUID | None = Form(None),
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
+    context: AuthContext = Depends(require_user),
 ) -> Dataset:
     try:
         filename, suffix = _upload_identity(file)
+        if parent_dataset_id:
+            _load_dataset(session, parent_dataset_id, context)
     except HTTPException:
         await file.close()
         raise
@@ -143,6 +149,7 @@ async def upload_dataset(
         file_type=suffix.removeprefix(".") or "unknown",
         status=DatasetStatus.PROCESSING,
         parent_dataset_id=parent_dataset_id,
+        owner_id=context.user.id,
     )
     session.add(dataset)
     session.commit()
@@ -216,7 +223,7 @@ async def upload_dataset(
         )
         dataset.completed_at = datetime.now(timezone.utc)
         session.commit()
-        return _load_dataset(session, dataset.id)
+        return _load_dataset(session, dataset.id, context)
     except HTTPException as exc:
         dataset.status = DatasetStatus.FAILED
         dataset.failure_message = exc.detail.get("message", "Upload gagal.") if isinstance(exc.detail, dict) else str(exc.detail)
@@ -261,10 +268,64 @@ async def upload_dataset(
 
 
 @router.get("", response_model=list[DatasetSummaryResponse])
-def list_datasets(session: Session = Depends(get_session)) -> list[Dataset]:
-    return list(session.scalars(select(Dataset).order_by(Dataset.created_at.desc())))
+def list_datasets(session: Session = Depends(get_session), context: AuthContext = Depends(require_user)) -> list[Dataset]:
+    return list(session.scalars(select(Dataset).where(*dataset_scope(context)).options(selectinload(Dataset.owner)).order_by(Dataset.created_at.desc(), Dataset.id.desc())))
+
+
+@router.get("/page", response_model=DatasetPageResponse)
+def dataset_page(
+    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+    search: str = Query("", max_length=255),
+    assessment_status: str | None = Query(None, pattern="^(PASSED|NEEDS_CORRECTION|PROCESSING|FAILED)$"),
+    session: Session = Depends(get_session), context: AuthContext = Depends(require_user),
+):
+    conditions = dataset_scope(context)
+    if search.strip():
+        conditions.append(Dataset.original_filename.icontains(search.strip(), autoescape=True))
+    if assessment_status in {"PASSED", "NEEDS_CORRECTION"}:
+        conditions.extend([Dataset.status == DatasetStatus.COMPLETED, Dataset.assessment_status == assessment_status])
+    elif assessment_status:
+        conditions.append(Dataset.status == DatasetStatus(assessment_status))
+    total = session.scalar(select(func.count()).select_from(Dataset).where(*conditions)) or 0
+    items = list(session.scalars(select(Dataset).where(*conditions).options(selectinload(Dataset.owner))
+        .order_by(Dataset.created_at.desc(), Dataset.id.desc()).offset((page - 1) * page_size).limit(page_size)))
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+class DatasetSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+def _change_deletion(payload: DatasetSelection, session: Session, context: AuthContext, *, restore: bool = False):
+    ids = set(payload.dataset_ids)
+    datasets = list(session.scalars(select(Dataset).where(Dataset.id.in_(ids), *dataset_scope(context, deleted=restore)).with_for_update()))
+    if len(datasets) != len(ids):
+        raise HTTPException(status_code=404, detail={"message": "Ada dataset yang tidak tersedia atau tidak dapat diakses. Tidak ada perubahan."})
+    if any(item.status == DatasetStatus.PROCESSING for item in datasets):
+        raise HTTPException(status_code=409, detail={"message": "Dataset yang masih diproses belum dapat dihapus."})
+    timestamp = None if restore else datetime.now(timezone.utc)
+    for item in datasets:
+        item.deleted_at = timestamp
+    session.commit()
+    return {"dataset_ids": [str(item.id) for item in datasets], "count": len(datasets)}
+
+
+@router.post("/bulk-delete")
+def bulk_delete(payload: DatasetSelection, session: Session = Depends(get_session), context: AuthContext = Depends(require_user)):
+    return _change_deletion(payload, session, context)
+
+
+@router.post("/bulk-restore")
+def bulk_restore(payload: DatasetSelection, session: Session = Depends(get_session), context: AuthContext = Depends(require_user)):
+    return _change_deletion(payload, session, context, restore=True)
+
+
+@router.delete("/{dataset_id}")
+def delete_dataset(dataset_id: uuid.UUID, session: Session = Depends(get_session), context: AuthContext = Depends(require_user)):
+    return _change_deletion(DatasetSelection(dataset_ids=[dataset_id]), session, context)
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetailResponse)
-def get_dataset(dataset_id: uuid.UUID, session: Session = Depends(get_session)) -> Dataset:
-    return _load_dataset(session, dataset_id)
+def get_dataset(dataset_id: uuid.UUID, session: Session = Depends(get_session), context: AuthContext = Depends(require_user)) -> Dataset:
+    return _load_dataset(session, dataset_id, context)

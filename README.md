@@ -51,6 +51,12 @@ Perintah lain yang tersedia adalah `password`, `enable`, dan `disable`. Mengubah
 
 Admin dapat membuat akun melalui **Pengaturan → Akun pengguna** dengan nama, username, dan role `Admin` atau `Pemeriksa`. Pemeriksa dapat menggunakan assessment tetapi tidak dapat membuat atau melihat daftar akun melalui API pengelolaan akun. Role ini bukan status reviewer atau approval temuan.
 
+Dataset baru disimpan dengan pemilik akun yang menjalankan assessment. Pemeriksa hanya dapat mengakses dataset sendiri, termasuk dashboard, preview, temuan, perbandingan, dan laporan. Admin dapat mengakses seluruh dataset. Dataset lama sebelum migrasi `0007` tetap tanpa pemilik dan hanya terlihat oleh Admin; pemilik tidak ditetapkan berdasarkan dugaan.
+
+Riwayat dataset memakai pagination server-side (10/20/50 per halaman), pencarian, dan filter status. Geser baris ke kiri untuk membuka tombol Hapus; geser lebih jauh membuka dialog konfirmasi. Tidak ada ikon hapus permanen di kanan baris. Untuk keyboard, fokus pada tautan baris lalu tekan panah kiri untuk membuka aksi, atau gunakan checkbox dan Hapus terpilih. Pilihan massal berlaku pada halaman aktif saja. Semua ID diperiksa sebelum perubahan dilakukan; dataset yang sedang diproses tidak dapat dihapus.
+
+Penghapusan menggunakan `deleted_at`: hasil tidak lagi tampil di riwayat, dashboard, temuan, atau laporan aktif, sementara file sumber dan hasil tetap tersimpan. Tombol Urungkan memulihkan operasi terakhir selama halaman masih terbuka. Ini bukan penghapusan permanen atau koreksi dataset sumber. Migrasi dijalankan otomatis oleh startup Docker; untuk backend yang dijalankan manual, jalankan `alembic upgrade head` sebelum memulai aplikasi.
+
 Password awal akun yang dibuat melalui UI adalah `Password123`, sesuai kebutuhan prototipe, dan tetap disimpan sebagai hash. Pengecualian password awal tidak menurunkan kebijakan password biasa (12–128 karakter). Setelah login, Admin maupun Pemeriksa dapat membuka Profil melalui ikon people dan nama akun di kiri top bar, lalu mengganti password dengan memasukkan password saat ini, password baru, dan konfirmasinya. Perubahan berhasil mencabut semua sesi akun tersebut dan meminta login kembali. Perubahan tidak diwajibkan saat login pertama, tetapi password awal bersama tidak layak untuk deployment publik. Administrator tetap dapat memakai `python scripts/manage_user.py password --username <username>` untuk reset. Akun existing tidak berubah hanya karena fitur ditambahkan.
 
 Buka:

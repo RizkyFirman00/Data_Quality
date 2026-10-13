@@ -40,6 +40,17 @@ export const changeOwnPassword = (payload: { current_password: string; new_passw
 }).then((result) => { csrfToken = ""; return result; });
 
 export const listDatasets = () => request<DatasetSummary[]>("/datasets");
+export const getDatasetPage = (page: number, pageSize: number, search: string, status: string) => {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), search });
+  if (status !== "ALL") query.set("assessment_status", status);
+  return request<import("./types").DatasetPage>(`/datasets/page?${query}`);
+};
+export const deleteDatasets = (ids: string[]) => request<{ dataset_ids: string[]; count: number }>("/datasets/bulk-delete", {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dataset_ids: ids }),
+});
+export const restoreDatasets = (ids: string[]) => request<{ dataset_ids: string[]; count: number }>("/datasets/bulk-restore", {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dataset_ids: ids }),
+});
 export const getDataset = (id: string) => request<DatasetDetail>(`/datasets/${id}`);
 export const getConfig = () => request<PublicConfig>("/config");
 export const uploadDataset = (file: File, parentDatasetId?: string) => {

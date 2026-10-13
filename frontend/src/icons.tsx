@@ -112,6 +112,10 @@ export function PeopleNavIcon({ size = 20, ...props }: SVGProps<SVGSVGElement> &
   );
 }
 
+export function TrashIcon({ size = 18, ...props }: SVGProps<SVGSVGElement> & { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d="M3 5h14M7 5V3h6v2M5 5l.8 12h8.4L15 5M8 8v6M12 8v6" /></svg>;
+}
+
 export function LogoutIcon({ size = 16, ...props }: SVGProps<SVGSVGElement> & { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>

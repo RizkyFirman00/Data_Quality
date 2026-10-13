@@ -33,6 +33,9 @@ class Dataset(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("local_users.id", ondelete="SET NULL"), index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    owner: Mapped["LocalUser | None"] = relationship(foreign_keys=[owner_id])
     original_filename: Mapped[str] = mapped_column(String(255))
     source_type: Mapped[str] = mapped_column(String(32), default="file_upload")
     source_metadata: Mapped[dict[str, object]] = mapped_column(JsonType, default=dict)
@@ -64,6 +67,10 @@ class Dataset(Base):
         order_by=lambda: Finding.position,
     )
     parent_dataset: Mapped["Dataset | None"] = relationship(remote_side="Dataset.id")
+
+    @property
+    def owner_display_name(self) -> str | None:
+        return self.owner.display_name if self.owner else None
 
     @property
     def finding_summary(self) -> dict[str, dict[str, int]]:

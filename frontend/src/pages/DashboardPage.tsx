@@ -7,7 +7,7 @@ import { datasetAssessmentLabel as assessmentLabel, datasetAssessmentTone } from
 
 const date = (value: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 
-export default function DashboardPage() {
+export default function DashboardPage({ isAdmin = false }: { isAdmin?: boolean }) {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
@@ -20,7 +20,7 @@ export default function DashboardPage() {
   useEffect(load, [load]);
 
   return <main className="page">
-    <div className="page-heading"><div><span className="eyebrow">Ringkasan</span><h1>Assessment data</h1><p>Status faktual seluruh dataset yang sudah diperiksa.</p></div></div>
+    <div className="page-heading"><div><span className="eyebrow">Ringkasan</span><h1>Assessment data</h1><p>{isAdmin ? "Status seluruh dataset yang dapat diakses Admin." : "Status dataset yang kamu unggah dan periksa."}</p></div></div>
     {error ? <div className="feedback error" role="alert"><div><strong>Ringkasan tidak dapat dimuat</strong><p>{error.message}</p></div><button className="button secondary" onClick={load}>Coba lagi</button></div> : !dashboard ? <div className="dashboard-skeleton" aria-label="Memuat ringkasan"><i /><i /><i /><i /></div> : <>
       <section className="summary-strip" aria-label="Ringkasan assessment">
         <div><span>Total assessment</span><strong>{dashboard.total_assessments.toLocaleString("id-ID")}</strong></div>

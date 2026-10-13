@@ -113,8 +113,17 @@ export interface DatasetSummary {
   failure_message: string | null;
   assessment_status: "PASSED" | "NEEDS_CORRECTION" | null;
   parent_dataset_id: string | null;
+  owner_id?: string | null;
+  owner_display_name?: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface DatasetPage {
+  items: DatasetSummary[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface DatasetDetail extends DatasetSummary {

@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from .backoffice import fetch_backoffice_dataset
 from .config import Settings, get_settings
+from .auth import AuthContext, require_user
+from .dataset_access import dataset_scope
 from .database import get_session
 from .datasets import _load_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
@@ -47,8 +49,9 @@ def global_findings(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     session: Session = Depends(get_session),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, object]:
-    conditions = []
+    conditions = dataset_scope(context)
     if dataset_id:
         conditions.append(Finding.dataset_id == dataset_id)
     if severity:
@@ -95,11 +98,12 @@ def global_findings(
 
 
 @router.get("/dashboard", response_model=DashboardResponse)
-def dashboard(session: Session = Depends(get_session)) -> dict[str, object]:
-    datasets = list(session.scalars(select(Dataset)))
+def dashboard(session: Session = Depends(get_session), context: AuthContext = Depends(require_user)) -> dict[str, object]:
+    datasets = list(session.scalars(select(Dataset).where(*dataset_scope(context))))
     latest = session.scalar(
         select(Dataset)
         .where(
+            *dataset_scope(context),
             Dataset.status == DatasetStatus.COMPLETED,
             Dataset.completed_at.is_not(None),
         )
@@ -148,8 +152,9 @@ def list_findings(
     page_size: int = Query(50, ge=1, le=100),
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, object]:
-    dataset = _load_dataset(session, dataset_id)
+    dataset = _load_dataset(session, dataset_id, context)
     records = []
     if group_by_row and dataset.snapshot_key:
         records, _ = read_snapshot(config.storage_root, dataset.snapshot_key, 1, max(dataset.row_count, 1))
@@ -297,8 +302,9 @@ def report(
     column: str | None = None,
     search: str | None = None,
     session: Session = Depends(get_session),
+    context: AuthContext = Depends(require_user),
 ) -> StreamingResponse:
-    dataset = _load_dataset(session, dataset_id)
+    dataset = _load_dataset(session, dataset_id, context)
     findings = _filtered_findings(dataset.findings, severity, issue_type, column, search)
     filename = f"assessment-{dataset.id}.{format}"
     if format == "csv":
@@ -311,11 +317,16 @@ def report(
 
 
 @router.get("/datasets/{dataset_id}/comparison")
-def comparison(dataset_id: uuid.UUID, session: Session = Depends(get_session)) -> dict[str, object]:
-    dataset = _load_dataset(session, dataset_id)
+def comparison(dataset_id: uuid.UUID, session: Session = Depends(get_session), context: AuthContext = Depends(require_user)) -> dict[str, object]:
+    dataset = _load_dataset(session, dataset_id, context)
     if not dataset.parent_dataset_id:
         return {"available": False, "resolved": [], "remaining": [], "new": []}
-    parent = _load_dataset(session, dataset.parent_dataset_id)
+    try:
+        parent = _load_dataset(session, dataset.parent_dataset_id, context)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        return {"available": False, "resolved": [], "remaining": [], "new": []}
     def fingerprint(item: Finding) -> str:
         return json.dumps([item.row, item.column, item.issue_type, item.original_value], sort_keys=True, default=str)
     parent_by_key = {fingerprint(item): item for item in parent.findings}
@@ -336,8 +347,9 @@ def preview(
     source_row: int | None = Query(None, ge=1),
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
+    context: AuthContext = Depends(require_user),
 ) -> dict[str, object]:
-    dataset = _load_dataset(session, dataset_id)
+    dataset = _load_dataset(session, dataset_id, context)
     if not dataset.snapshot_key:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
     if source_row is not None:
@@ -357,8 +369,11 @@ def assess_backoffice(
     parent_dataset_id: uuid.UUID | None = None,
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
+    context: AuthContext = Depends(require_user),
 ) -> Dataset:
-    dataset = Dataset(original_filename="BACKOFFICE API", source_type="backoffice_api", file_type="api", status=DatasetStatus.PROCESSING, parent_dataset_id=parent_dataset_id)
+    if parent_dataset_id:
+        _load_dataset(session, parent_dataset_id, context)
+    dataset = Dataset(original_filename="BACKOFFICE API", source_type="backoffice_api", file_type="api", status=DatasetStatus.PROCESSING, parent_dataset_id=parent_dataset_id, owner_id=context.user.id)
     session.add(dataset)
     session.commit()
     try:
@@ -391,7 +406,7 @@ def assess_backoffice(
         dataset.status, dataset.completed_at = DatasetStatus.COMPLETED, datetime.now(timezone.utc)
         dataset.assessment_status = "NEEDS_CORRECTION" if any(item.severity == "HIGH" for item in results) else "PASSED"
         session.commit()
-        return _load_dataset(session, dataset.id)
+        return _load_dataset(session, dataset.id, context)
     except Exception as exc:
         dataset.status = DatasetStatus.FAILED
         dataset.failure_message = "Backoffice assessment gagal."

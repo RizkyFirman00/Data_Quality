@@ -67,8 +67,8 @@ export default function App() {
           <div className="account-menu"><button type="button" onClick={logout}><LogoutIcon size={16} />Logout</button></div>
         </header>
         <Routes>
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/datasets" element={<DatasetsPage />} />
+          <Route path="/dashboard" element={<DashboardPage isAdmin={auth.user.is_admin} />} />
+          <Route path="/datasets" element={<DatasetsPage isAdmin={auth.user.is_admin} />} />
           <Route path="/datasets/new" element={<UploadDatasetPage />} />
           <Route path="/datasets/:datasetId" element={<DatasetDetailPage />} />
           <Route path="/findings" element={<FindingsPage />} />
