@@ -4,6 +4,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -13,6 +15,7 @@ from .datasets import router as datasets_router
 from .database import get_session
 from .reference import ReferenceDataError, load_administrative_reference
 from .workflow import router as workflow_router
+from .users import router as users_router
 
 app = FastAPI(
     title="Intelligent Data Quality Assessment",
@@ -28,6 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router)
+app.include_router(users_router)
 app.include_router(datasets_router, dependencies=[Depends(require_user)])
 app.include_router(workflow_router, dependencies=[Depends(require_user)])
 
@@ -58,6 +62,16 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
     detail = {**detail, "request_id": request.state.request_id}
     return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path == "/api/auth/password":
+        return JSONResponse(status_code=422, content={"detail": {
+            "message": "Data perubahan password tidak valid. Password baru harus 12–128 karakter.",
+            "request_id": request.state.request_id,
+        }})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/api/health")

@@ -47,6 +47,15 @@ export interface AuthSession {
   csrf_token: string;
 }
 
+export type AccountRole = "Admin" | "Pemeriksa";
+export interface UserAccount {
+  id: string;
+  username: string;
+  display_name: string;
+  role: AccountRole;
+  is_active: boolean;
+}
+
 export interface ColumnProfile {
   original_name: string;
   display_name: string;

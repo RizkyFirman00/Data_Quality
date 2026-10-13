@@ -49,6 +49,10 @@ docker compose exec backend python scripts/manage_user.py create \
 
 Perintah lain yang tersedia adalah `password`, `enable`, dan `disable`. Mengubah password atau menonaktifkan akun mencabut seluruh session aktif.
 
+Admin dapat membuat akun melalui **Pengaturan → Akun pengguna** dengan nama, username, dan role `Admin` atau `Pemeriksa`. Pemeriksa dapat menggunakan assessment tetapi tidak dapat membuat atau melihat daftar akun melalui API pengelolaan akun. Role ini bukan status reviewer atau approval temuan.
+
+Password awal akun yang dibuat melalui UI adalah `Password123`, sesuai kebutuhan prototipe, dan tetap disimpan sebagai hash. Pengecualian password awal tidak menurunkan kebijakan password biasa (12–128 karakter). Setelah login, Admin maupun Pemeriksa dapat membuka Profil melalui ikon people dan nama akun di kiri top bar, lalu mengganti password dengan memasukkan password saat ini, password baru, dan konfirmasinya. Perubahan berhasil mencabut semua sesi akun tersebut dan meminta login kembali. Perubahan tidak diwajibkan saat login pertama, tetapi password awal bersama tidak layak untuk deployment publik. Administrator tetap dapat memakai `python scripts/manage_user.py password --username <username>` untuk reset. Akun existing tidak berubah hanya karena fitur ditambahkan.
+
 Buka:
 
 - UI: <http://localhost:5173>

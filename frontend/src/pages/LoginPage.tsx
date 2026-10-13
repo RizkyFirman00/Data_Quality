@@ -3,7 +3,7 @@ import { ApiError, loginLocal } from "../api";
 import type { AuthSession } from "../types";
 import { BrandLogo } from "../icons";
 
-export default function LoginPage({ onLogin }: { onLogin: (session: AuthSession) => void }) {
+export default function LoginPage({ onLogin, notice = "" }: { onLogin: (session: AuthSession) => void; notice?: string }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -21,6 +21,7 @@ export default function LoginPage({ onLogin }: { onLogin: (session: AuthSession)
       <div className="login-brand"><BrandLogo size={40} /><div><strong>Data Quality</strong><span>Assessment dataset</span></div></div>
       <div className="login-copy"><span className="eyebrow">Akses pemeriksa</span><h1 id="login-title">Masuk ke ruang kerja</h1><p>Gunakan akun lokal yang dibuat oleh administrator sistem.</p></div>
       <form className="login-form" onSubmit={submit}>
+        {notice && <p className="login-notice" role="status">{notice}</p>}
         <label><span>Username</span><input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required minLength={3} maxLength={64} autoFocus /></label>
         <label><span>Password</span><input name="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={128} /></label>
         {error && <div className="login-error" role="alert">{error}</div>}

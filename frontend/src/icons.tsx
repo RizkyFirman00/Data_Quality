@@ -103,6 +103,23 @@ export function SettingsNavIcon({ size = 20, ...props }: SVGProps<SVGSVGElement>
   );
 }
 
+export function PeopleNavIcon({ size = 20, ...props }: SVGProps<SVGSVGElement> & { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <circle cx="7.5" cy="6" r="3" />
+      <path d="M2.5 17v-1.5a5 5 0 0 1 10 0V17M13 3.2a3 3 0 0 1 0 5.6M15 11a4.5 4.5 0 0 1 2.5 4V17" />
+    </svg>
+  );
+}
+
+export function LogoutIcon({ size = 16, ...props }: SVGProps<SVGSVGElement> & { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="M8 3H4a1.5 1.5 0 0 0-1.5 1.5v11A1.5 1.5 0 0 0 4 17h4M7.5 10h10M14 6.5l3.5 3.5-3.5 3.5" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ size = 18, ...props }: SVGProps<SVGSVGElement> & { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>

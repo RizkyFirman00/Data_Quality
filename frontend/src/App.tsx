@@ -8,6 +8,7 @@ import FindingsPage from "./pages/FindingsPage";
 import ReferenceDataPage from "./pages/ReferenceDataPage";
 import SettingsPage from "./pages/SettingsPage";
 import LoginPage from "./pages/LoginPage";
+import ProfilePage from "./pages/ProfilePage";
 import { getCurrentUser, logoutLocal } from "./api";
 import type { AuthSession } from "./types";
 import {
@@ -18,6 +19,8 @@ import {
   DatasetsNavIcon,
   FindingsNavIcon,
   PlusIcon,
+  PeopleNavIcon,
+  LogoutIcon,
   ReferenceNavIcon,
   SettingsNavIcon,
   ShieldCheckIcon,
@@ -27,6 +30,7 @@ import "./styles.css";
 export default function App() {
   const [auth, setAuth] = useState<AuthSession | null | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [authNotice, setAuthNotice] = useState("");
   const location = useLocation();
   useEffect(() => setMenuOpen(false), [location.pathname]);
   useEffect(() => {
@@ -37,9 +41,9 @@ export default function App() {
   }, []);
 
   if (auth === undefined) return <main className="auth-loading" role="status"><span className="spinner" /><p>Memeriksa session…</p></main>;
-  if (auth === null) return <LoginPage onLogin={setAuth} />;
+  if (auth === null) return <LoginPage notice={authNotice} onLogin={(session) => { setAuthNotice(""); setAuth(session); }} />;
 
-  const logout = async () => { try { await logoutLocal(); } finally { setAuth(null); } };
+  const logout = async () => { try { await logoutLocal(); } finally { setAuthNotice(""); setAuth(null); } };
 
   return (
     <div className="app-shell">
@@ -59,8 +63,8 @@ export default function App() {
       <div className="workspace">
         <header className="topbar">
           <button className="menu-button" type="button" aria-label="Buka navigasi" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><span /><span /><span /></button>
-          <div className="mobile-brand"><BrandLogo size={28} /><strong>Data Quality</strong></div>
-          <div className="account-menu"><span><strong>{auth.user.display_name}</strong><small>{auth.user.username}</small></span><button type="button" onClick={logout}>Keluar</button></div>
+          <NavLink to="/profile" className="topbar-profile" aria-label="Buka profil akun"><PeopleNavIcon size={22} /><span><strong>{auth.user.display_name}</strong><small>Profil · @{auth.user.username}</small></span></NavLink>
+          <div className="account-menu"><button type="button" onClick={logout}><LogoutIcon size={16} />Logout</button></div>
         </header>
         <Routes>
           <Route path="/dashboard" element={<DashboardPage />} />
@@ -69,7 +73,8 @@ export default function App() {
           <Route path="/datasets/:datasetId" element={<DatasetDetailPage />} />
           <Route path="/findings" element={<FindingsPage />} />
           <Route path="/reference-data" element={<ReferenceDataPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings" element={<SettingsPage user={auth.user} />} />
+          <Route path="/profile" element={<ProfilePage user={auth.user} onPasswordChanged={(message) => { setAuthNotice(message); setAuth(null); }} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </div>

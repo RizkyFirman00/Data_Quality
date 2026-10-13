@@ -1,4 +1,4 @@
-import type { AssessmentPreview, AuthSession, Dashboard, DatasetDetail, DatasetSummary, FindingPage, GlobalFindingPage, PreviewPage, PublicConfig, ReferencePage, SystemSettings } from "./types";
+import type { AccountRole, AssessmentPreview, AuthSession, Dashboard, DatasetDetail, DatasetSummary, FindingPage, GlobalFindingPage, PreviewPage, PublicConfig, ReferencePage, SystemSettings, UserAccount } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
@@ -23,6 +23,7 @@ async function request<T>(path: string, options?: RequestInit, notifyUnauthorize
       body?.detail?.request_id || response.headers.get("x-request-id") || undefined,
     );
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -34,6 +35,9 @@ export const loginLocal = (username: string, password: string) => request<AuthSe
   body: JSON.stringify({ username, password }),
 }, false).then(rememberSession);
 export const logoutLocal = () => request<void>("/auth/logout", { method: "POST" }, false).finally(() => { csrfToken = ""; });
+export const changeOwnPassword = (payload: { current_password: string; new_password: string; confirm_password: string }) => request<{ message: string }>("/auth/password", {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+}).then((result) => { csrfToken = ""; return result; });
 
 export const listDatasets = () => request<DatasetSummary[]>("/datasets");
 export const getDataset = (id: string) => request<DatasetDetail>(`/datasets/${id}`);
@@ -78,3 +82,7 @@ export const getReferenceData = (options: { page: number; pageSize: number; sear
   return request<ReferencePage>(`/reference-data?${query}`);
 };
 export const getSystemSettings = () => request<SystemSettings>("/settings");
+export const listUserAccounts = () => request<UserAccount[]>("/users");
+export const createUserAccount = (payload: { username: string; display_name: string; role: AccountRole }) => request<UserAccount>("/users", {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+});
