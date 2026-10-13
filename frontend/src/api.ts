@@ -1,4 +1,4 @@
-import type { AuthSession, Dashboard, DatasetDetail, DatasetSummary, FindingPage, GlobalFindingPage, PreviewPage, PublicConfig, ReferencePage, SystemSettings } from "./types";
+import type { AssessmentPreview, AuthSession, Dashboard, DatasetDetail, DatasetSummary, FindingPage, GlobalFindingPage, PreviewPage, PublicConfig, ReferencePage, SystemSettings } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
@@ -44,18 +44,27 @@ export const uploadDataset = (file: File, parentDatasetId?: string) => {
   if (parentDatasetId) data.append("parent_dataset_id", parentDatasetId);
   return request<DatasetDetail>("/datasets", { method: "POST", body: data });
 };
+export const previewDataset = (file: File) => {
+  const data = new FormData();
+  data.append("file", file);
+  return request<AssessmentPreview>("/datasets/preview", { method: "POST", body: data });
+};
 export const getDashboard = () => request<Dashboard>("/dashboard");
-export const listFindings = (id: string, options: { page: number; pageSize: number; search?: string; severity?: string; issueType?: string }) => {
+export const listFindings = (id: string, options: { page: number; pageSize: number; search?: string; severity?: string; issueType?: string; groupByRow?: boolean; assessmentKind?: string; sortBy?: string; sortDirection?: "asc" | "desc" }) => {
   const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize) });
   if (options.search) query.set("search", options.search);
   if (options.severity) query.set("severity", options.severity);
   if (options.issueType) query.set("issue_type", options.issueType);
+  if (options.groupByRow) query.set("group_by_row", "true");
+  if (options.assessmentKind) query.set("assessment_kind", options.assessmentKind);
+  if (options.sortBy) query.set("sort_by", options.sortBy);
+  if (options.sortDirection) query.set("sort_direction", options.sortDirection);
   return request<FindingPage>(`/datasets/${id}/findings?${query}`);
 };
 export const reportUrl = (id: string, format: "csv" | "xlsx" | "pdf") => `${API_URL}/datasets/${id}/report?format=${format}`;
 export const getComparison = (id: string) => request<{ available: boolean; resolved: string[]; remaining: string[]; new: string[] }>(`/datasets/${id}/comparison`);
 export const assessBackoffice = (parentDatasetId?: string) => request<DatasetDetail>("/backoffice-assessments" + (parentDatasetId ? `?parent_dataset_id=${encodeURIComponent(parentDatasetId)}` : ""), { method: "POST" });
-export const getPreview = (id: string, page: number = 1, pageSize: number = 25) => request<PreviewPage>(`/datasets/${id}/preview?page=${page}&page_size=${pageSize}`);
+export const getPreview = (id: string, page: number = 1, pageSize: number = 25, sourceRow?: number) => request<PreviewPage>(`/datasets/${id}/preview?page=${page}&page_size=${pageSize}${sourceRow != null ? `&source_row=${sourceRow}` : ""}`);
 export const listGlobalFindings = (options: { page: number; pageSize: number; search?: string; severity?: string }) => {
   const query = new URLSearchParams({ page: String(options.page), page_size: String(options.pageSize) });
   if (options.search) query.set("search", options.search);

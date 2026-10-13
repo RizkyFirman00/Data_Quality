@@ -14,10 +14,21 @@ from .ingestion import DatasetParseError, parse_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
 from .normalization import write_snapshot
 from .profiling import profile_dataset
-from .quality import QualityAssessmentError, ordered_findings, quality_findings
+from .quality import (
+    QualityAssessmentError,
+    check_execution_metadata,
+    ordered_findings,
+    planned_quality_checks,
+    quality_findings,
+)
 from .reference import ReferenceDataError, load_administrative_reference
-from .schemas import DatasetDetailResponse, DatasetSummaryResponse
-from .semantic import apply_semantic_roles, semantic_analysis
+from .schemas import DatasetDetailResponse, DatasetPreviewResponse, DatasetSummaryResponse
+from .semantic import (
+    apply_action_summaries,
+    apply_semantic_roles,
+    semantic_analysis,
+    summarize_finding_actions,
+)
 from .storage import delete_storage_key, persist_original
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -51,6 +62,66 @@ async def _stage_upload(upload: UploadFile, target: Path, limit: int) -> None:
         raise DatasetParseError("File yang diunggah kosong.")
 
 
+def _upload_identity(upload: UploadFile) -> tuple[str, str]:
+    filename = Path(upload.filename or "").name
+    if len(filename) > 255:
+        raise HTTPException(status_code=422, detail={"message": "Nama file terlalu panjang."})
+    if "\x00" in filename:
+        raise HTTPException(status_code=422, detail={"message": "Nama file tidak valid."})
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".csv", ".xlsx", ".xls"}:
+        raise DatasetParseError("Format file tidak didukung. Gunakan CSV, XLSX, atau XLS.")
+    return filename or "tanpa-nama", suffix
+
+
+@router.post("/preview", response_model=DatasetPreviewResponse)
+async def preview_upload(
+    file: UploadFile = File(...),
+    config: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Profile a temporary upload without creating an assessment or calling the LLM."""
+    staged: Path | None = None
+    try:
+        filename, suffix = _upload_identity(file)
+        staged = config.storage_root / "staging" / f"preview-{uuid.uuid4()}{suffix}"
+        await _stage_upload(file, staged, config.max_upload_mb * 1024 * 1024)
+        parsed = await run_in_threadpool(
+            parse_dataset,
+            staged,
+            filename,
+            config.max_upload_mb * 10 * 1024 * 1024,
+            config.max_dataset_rows,
+            config.max_dataset_columns,
+            config.max_dataset_cells,
+        )
+        profile = await run_in_threadpool(profile_dataset, parsed, min(config.preview_rows, 10))
+        semantic_enabled = bool(config.llm_base_url and config.llm_api_key and config.llm_model)
+        return {
+            "filename": filename,
+            "worksheet_name": parsed.worksheet_name,
+            "row_count": profile.row_count,
+            "column_count": profile.column_count,
+            "duplicate_row_count": profile.duplicate_row_count,
+            "rows": profile.preview,
+            "columns": profile.columns,
+            "checks": planned_quality_checks(profile, semantic_enabled=semantic_enabled),
+        }
+    except HTTPException:
+        raise
+    except DatasetParseError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
+    except Exception as exc:
+        logger.exception("Dataset preview failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "Preview dataset tidak dapat dibuat."},
+        ) from exc
+    finally:
+        if staged:
+            staged.unlink(missing_ok=True)
+        await file.close()
+
+
 @router.post("", response_model=DatasetDetailResponse, status_code=status.HTTP_201_CREATED)
 async def upload_dataset(
     file: UploadFile = File(...),
@@ -58,12 +129,14 @@ async def upload_dataset(
     session: Session = Depends(get_session),
     config: Settings = Depends(get_settings),
 ) -> Dataset:
-    filename = Path(file.filename or "").name
-    if len(filename) > 255:
-        raise HTTPException(status_code=422, detail={"message": "Nama file terlalu panjang."})
-    if "\x00" in filename:
-        raise HTTPException(status_code=422, detail={"message": "Nama file tidak valid."})
-    suffix = Path(filename).suffix.lower()
+    try:
+        filename, suffix = _upload_identity(file)
+    except HTTPException:
+        await file.close()
+        raise
+    except DatasetParseError as exc:
+        await file.close()
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
     dataset = Dataset(
         original_filename=filename or "tanpa-nama",
         source_type="file_upload",
@@ -78,8 +151,6 @@ async def upload_dataset(
     original_key: str | None = None
     snapshot_key: str | None = None
     try:
-        if suffix not in {".csv", ".xlsx", ".xls"}:
-            raise DatasetParseError("Format file tidak didukung. Gunakan CSV, XLSX, atau XLS.")
         await _stage_upload(file, staged, config.max_upload_mb * 1024 * 1024)
         parsed = await run_in_threadpool(
             parse_dataset,
@@ -102,12 +173,18 @@ async def upload_dataset(
         )
         semantic = await run_in_threadpool(semantic_analysis, parsed, profile, config)
         profile = apply_semantic_roles(profile, semantic.roles)
+        executed_checks: list[str] = []
         finding_results = await run_in_threadpool(
-            quality_findings, parsed, profile, reference, config.max_findings
+            quality_findings, parsed, profile, reference, config.max_findings,
+            executed_checks=executed_checks,
         )
         finding_results = ordered_findings(parsed, finding_results + semantic.findings)
         if len(finding_results) > config.max_findings:
             raise QualityAssessmentError("Dataset menghasilkan terlalu banyak temuan kualitas.")
+        action_summaries = await run_in_threadpool(
+            summarize_finding_actions, finding_results, config
+        )
+        finding_results = apply_action_summaries(finding_results, action_summaries)
         dataset.original_file_key = original_key
         dataset.snapshot_key = snapshot_key
         dataset.worksheet_name = parsed.worksheet_name
@@ -120,8 +197,12 @@ async def upload_dataset(
         ]
         dataset.finding_count = len(finding_results)
         dataset.source_metadata = {
+            "quality_checks": check_execution_metadata(profile, executed_checks),
             "semantic_available": semantic.available,
             "semantic_roles": semantic.roles,
+            "action_summary_available": action_summaries.available,
+            "action_summary_ai_count": action_summaries.ai_count,
+            "action_summary_fallback_count": len(action_summaries.summaries) - action_summaries.ai_count,
         }
         dataset.findings = [
             Finding(position=position, **result.__dict__)
@@ -130,7 +211,7 @@ async def upload_dataset(
         dataset.status = DatasetStatus.COMPLETED
         dataset.assessment_status = (
             "NEEDS_CORRECTION"
-            if any(finding.severity == "HIGH" and finding.status == "OPEN" for finding in finding_results)
+            if any(finding.severity == "HIGH" for finding in finding_results)
             else "PASSED"
         )
         dataset.completed_at = datetime.now(timezone.utc)

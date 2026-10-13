@@ -10,7 +10,7 @@ from sqlalchemy import CheckConstraint, inspect
 import app.datasets as datasets_module
 from app.config import Settings, get_settings
 from app.main import app
-from app.models import Dataset, Finding
+from app.models import Dataset
 from app.quality import QualityAssessmentError
 
 
@@ -21,7 +21,7 @@ def test_config_exposes_upload_limit(client: TestClient) -> None:
     assert response.json() == {"max_upload_mb": 1, "backoffice_enabled": False, "llm_max_candidates": 50}
 
 
-def test_status_and_verdict_values_are_constrained_by_schema() -> None:
+def test_assessment_verdict_values_are_constrained_by_schema() -> None:
     def constraints(model: type[object]) -> str:
         return "\n".join(
             str(constraint.sqltext)
@@ -29,8 +29,6 @@ def test_status_and_verdict_values_are_constrained_by_schema() -> None:
             if isinstance(constraint, CheckConstraint)
         )
 
-    assert "OPEN" in constraints(Finding)
-    assert "DISMISSED" in constraints(Finding)
     assert "PASSED" in constraints(Dataset)
     assert "NEEDS_CORRECTION" in constraints(Dataset)
 
@@ -58,6 +56,101 @@ def test_upload_list_and_detail_dataset(client: TestClient) -> None:
     assert detail.json()["column_profiles"][1]["inferred_type"] == "integer"
 
 
+def test_finding_context_and_preview_locate_sparse_excel_source_row(client: TestClient) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["nama_kegiatan", "jumlah"])
+    sheet.append(["Kegiatan awal", 1])
+    sheet.cell(40, 1, "Kegiatan akhir")
+    sheet.cell(40, 2, 2)
+    content = BytesIO()
+    workbook.save(content)
+    uploaded = client.post("/api/datasets", files={"file": ("sparse.xlsx", content.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert uploaded.status_code == 201
+    dataset_id = uploaded.json()["id"]
+    findings = client.get(f"/api/datasets/{dataset_id}/findings?group_by_row=true&issue_type=INVALID_CASE").json()
+    final_group = next(group for group in findings["row_groups"] if group["row"] == 40)
+    assert final_group["source_record"]["nama_kegiatan"] == "Kegiatan akhir"
+    assert final_group["source_record"]["_source_row"] == 40
+    located = client.get(f"/api/datasets/{dataset_id}/preview?source_row=40&page_size=1")
+    assert located.status_code == 200
+    assert located.json()["page"] == 2
+    assert located.json()["items"][0]["_source_row"] == 40
+    assert client.get(f"/api/datasets/{dataset_id}/preview?source_row=39").status_code == 404
+
+
+def test_grouped_findings_search_source_context_and_filter_kind(client: TestClient) -> None:
+    uploaded = client.post("/api/datasets", files={"file": ("context.csv", b"lokasi,nama_kegiatan,jumlah\nGAMBIR,kegiatan satu,1\nCILINCING,kegiatan dua,2\n", "text/csv")})
+    assert uploaded.status_code == 201
+    dataset_id = uploaded.json()["id"]
+    url = f"/api/datasets/{dataset_id}/findings"
+    found = client.get(url, params={"group_by_row": True, "search": "CILINCING", "assessment_kind": "required"})
+    assert found.status_code == 200
+    body = found.json()
+    assert body["total_rows"] == 1
+    assert body["row_groups"][0]["row"] == 3
+    assert body["row_groups"][0]["source_record"]["lokasi"] == "CILINCING"
+    assert all(finding["issue_type"] == "INVALID_CASE" for finding in body["items"])
+    empty = client.get(url, params={"group_by_row": True, "assessment_kind": "review"}).json()
+    assert empty["total_rows"] == 0
+    assert empty["row_groups"] == []
+    assert client.get(url, params={"assessment_kind": "unsupported"}).status_code == 422
+
+
+def test_grouped_finding_sort_is_global_numeric_stable_and_missing_last(client: TestClient) -> None:
+    uploaded = client.post("/api/datasets", files={"file": ("sort.csv", b"nama,jumlah\nZulu,10\nAlpha,2\nMike,30\nDelta,\nEcho,0\nBravo,2\n", "text/csv")})
+    assert uploaded.status_code == 201
+    url = f"/api/datasets/{uploaded.json()['id']}/findings"
+    params = {"group_by_row": True, "sort_by": "jumlah", "page_size": 2}
+    ascending = [client.get(url, params={**params, "page": page}).json() for page in (1, 2, 3)]
+    assert [group["row"] for result in ascending for group in result["row_groups"]] == [6, 3, 7, 2, 4, 5]
+    descending = client.get(url, params={**params, "sort_direction": "desc", "page_size": 100}).json()
+    assert [group["row"] for group in descending["row_groups"]] == [4, 2, 3, 7, 6, 5]
+    text_sort = client.get(url, params={"group_by_row": True, "sort_by": "nama", "page_size": 100}).json()
+    assert [group["row"] for group in text_sort["row_groups"]] == [3, 7, 5, 6, 4, 2]
+    source_sort = client.get(url, params={"group_by_row": True, "sort_by": "_source_row", "sort_direction": "desc", "page_size": 1}).json()
+    assert source_sort["row_groups"][0]["row"] == 7
+    assert client.get(url, params={"group_by_row": True, "sort_by": "not_a_column"}).status_code == 422
+    assert client.get(url, params={"sort_direction": "invalid"}).status_code == 422
+
+
+def test_preview_profiles_file_without_creating_assessment(client: TestClient) -> None:
+    response = client.post(
+        "/api/datasets/preview",
+        files={
+            "file": (
+                "preview.csv",
+                b"nama,jumlah,tanggal_kejadian\nANI,10,20250101\nBUDI,20,20250102\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"] == "preview.csv"
+    assert (body["row_count"], body["column_count"]) == (2, 3)
+    assert body["rows"][0] == {
+        "_source_row": 2,
+        "nama": "ANI",
+        "jumlah": "10",
+        "tanggal_kejadian": "20250101",
+    }
+    assert [column["candidate_role"] for column in body["columns"]] == [
+        "text",
+        "numeric",
+        "date",
+    ]
+    assert body["checks"] == [
+        "FULL_ROW_DUPLICATE",
+        "MISSING_VALUE",
+        "UPPERCASE",
+        "DATE_FORMAT",
+        "NUMERIC_FORMAT",
+    ]
+    assert client.get("/api/datasets").json() == []
+
+
 def test_backoffice_failure_persists_only_safe_message(client: TestClient) -> None:
     app.dependency_overrides[get_settings] = lambda: Settings(
         database_url="sqlite://",
@@ -73,23 +166,17 @@ def test_backoffice_failure_persists_only_safe_message(client: TestClient) -> No
     assert "secret-token" not in str(failed)
 
 
-def test_reviewer_status_dashboard_report_and_comparison(client: TestClient) -> None:
+def test_findings_are_read_only_and_reassessment_can_be_compared(client: TestClient) -> None:
     first = client.post(
         "/api/datasets",
         files={"file": ("first.csv", b"nama\nAni\n", "text/csv")},
     ).json()
     finding_id = first["findings"][0]["id"]
+    assert "status" not in first["findings"][0]
 
     changed = client.patch(f"/api/findings/{finding_id}", json={"status": "DISMISSED"})
-    assert changed.status_code == 200
-    assert changed.json()["status"] == "DISMISSED"
-    assert client.get("/api/dashboard").json()["passed_assessments"] == 1
-    report = client.get(
-        f"/api/datasets/{first['id']}/report?format=csv&status=OPEN"
-    ).text
-    assert "Ringkasan assessment" in report
-    assert "Baris,Kolom,Temuan,Severity" in report
-    assert "INVALID_CASE" not in report
+    assert changed.status_code == 404
+    assert client.get("/api/dashboard").json()["needs_correction_assessments"] == 1
 
     second = client.post(
         "/api/datasets",
@@ -162,13 +249,32 @@ def test_findings_are_paginated_and_keep_source_row_order(client: TestClient) ->
     second_page = client.get(
         f"/api/datasets/{dataset['id']}/findings?page=2&page_size=2"
     ).json()
-    filtered = client.get(
+    medium = client.get(
         f"/api/datasets/{dataset['id']}/findings?severity=MEDIUM&page_size=50"
+    ).json()
+    high = client.get(
+        f"/api/datasets/{dataset['id']}/findings?severity=HIGH&page_size=50"
+    ).json()
+    first_row_page = client.get(
+        f"/api/datasets/{dataset['id']}/findings?group_by_row=true&page=1&page_size=1"
+    ).json()
+    second_row_page = client.get(
+        f"/api/datasets/{dataset['id']}/findings?group_by_row=true&page=2&page_size=1"
+    ).json()
+    invalid_case_rows = client.get(
+        f"/api/datasets/{dataset['id']}/findings?severity=HIGH&issue_type=INVALID_CASE&group_by_row=true&page_size=10"
     ).json()
 
     assert first_page["total"] == 3
     assert first_page["page"] == 1
     assert first_page["page_size"] == 2
+    assert first_page["total_rows"] == 2
+    assert first_page["row_groups"] == []
+    assert first_page["by_issue_type"] == {
+        "INVALID_CASE": 1,
+        "INVALID_PLACEHOLDER": 1,
+        "MISSING_VALUE": 1,
+    }
     assert [(item["row"], item["column"]) for item in first_page["items"]] == [
         (3, "nama"),
         (3, "catatan"),
@@ -176,10 +282,32 @@ def test_findings_are_paginated_and_keep_source_row_order(client: TestClient) ->
     assert [(item["row"], item["column"]) for item in second_page["items"]] == [
         (4, "nama")
     ]
-    assert {item["issue_type"] for item in filtered["items"]} == {
+    assert {item["issue_type"] for item in medium["items"]} == {"INVALID_PLACEHOLDER"}
+    assert medium["by_issue_type"] == {"INVALID_PLACEHOLDER": 1}
+    assert {item["issue_type"] for item in high["items"]} == {
         "INVALID_CASE",
-        "INVALID_PLACEHOLDER",
+        "MISSING_VALUE",
     }
+    assert high["by_issue_type"] == {"INVALID_CASE": 1, "MISSING_VALUE": 1}
+    assert first_row_page["total"] == 3
+    assert first_row_page["total_rows"] == 2
+    assert first_row_page["row_groups"][0]["row"] == 3
+    assert first_row_page["row_groups"][0]["action_summary_source"] == "fallback"
+    assert first_row_page["row_groups"][0]["action_summary"].startswith("Memeriksa")
+    assert first_row_page["row_groups"][0]["action_summary_confidence"] is None
+    assert [item["column"] for item in first_row_page["row_groups"][0]["findings"]] == [
+        "nama",
+        "catatan",
+    ]
+    assert [item["row"] for item in first_row_page["items"]] == [3, 3]
+    assert second_row_page["row_groups"][0]["row"] == 4
+    assert [item["column"] for item in second_row_page["row_groups"][0]["findings"]] == [
+        "nama"
+    ]
+    assert invalid_case_rows["row_groups"][0]["action_summary_source"] == "fallback"
+    assert invalid_case_rows["row_groups"][0]["action_summary"].startswith(
+        "Mengganti nilai"
+    )
 
 
 def test_global_findings_are_read_only_searchable_and_include_dataset(client: TestClient) -> None:
@@ -229,19 +357,26 @@ def test_upload_runs_structural_quality_checks(client: TestClient) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["finding_count"] == 4
+    execution = body["source_metadata"]["quality_checks"]
+    assert set(execution["executed"]) == set(execution["relevant"])
+    assert "DATE_FORMAT" not in execution["executed"]
+    assert "DATE_FORMAT" in execution["available"]
     assert body["finding_summary"]["by_issue_type"] == {
         "DUPLICATE": 1,
         "MISSING_VALUE": 1,
         "INVALID_PLACEHOLDER": 1,
         "INVALID_CASE": 1,
     }
-    assert body["finding_summary"]["by_severity"] == {"HIGH": 2, "MEDIUM": 2}
+    assert body["finding_summary"]["by_severity"] == {"HIGH": 3, "MEDIUM": 1}
     assert [(item["row"], item["issue_type"]) for item in body["findings"]] == [
         (3, "INVALID_CASE"),
         (3, "INVALID_PLACEHOLDER"),
         (4, "MISSING_VALUE"),
         (5, "DUPLICATE"),
     ]
+    missing = next(item for item in body["findings"] if item["issue_type"] == "MISSING_VALUE")
+    assert missing["expected_value"] == "N/A"
+    assert missing["recommendation"] == 'Mengganti nilai kosong dengan "N/A" sebagai representasi nilai yang tidak tersedia.'
     assert "original_file_key" not in str(body)
     assert client.get("/api/datasets").json()[0]["finding_count"] == 4
 
@@ -379,7 +514,7 @@ def test_upload_persists_date_and_period_findings(client: TestClient) -> None:
     assert body["finding_summary"]["by_severity"] == {"HIGH": 2}
     assert [item["expected_value"] for item in body["findings"]] == [
         "20250130",
-        "YYYY atau YYYYMM",
+        "YYYY, YYYYMM, YYYY-T1–T4 atau YYYY-S1–S2",
     ]
     assert all(item["detector"] == "deterministic:date-v1" for item in body["findings"])
 
@@ -470,7 +605,7 @@ def test_quality_failure_is_safe_and_cleans_artifacts(
 def test_quality_limit_returns_actionable_422_and_cleans_artifacts(
     client: TestClient, tmp_path: Path, monkeypatch
 ) -> None:
-    def reject_findings(_parsed, _profile, _reference, max_findings):
+    def reject_findings(_parsed, _profile, _reference, max_findings, *, executed_checks=None):
         assert max_findings == 10_000
         raise QualityAssessmentError(
             "Dataset menghasilkan lebih dari 10000 temuan kualitas. Kurangi ukuran dataset."

@@ -66,6 +66,10 @@ def test_missing_placeholder_and_case_are_distinct() -> None:
     ]
     assert findings[-1].original_value == "Kota 2-A"
     assert findings[-1].expected_value == "KOTA 2-A"
+    assert findings[-1].severity == "HIGH"
+    for finding in findings[:3]:
+        assert finding.expected_value == "N/A"
+        assert finding.recommendation == 'Mengganti nilai kosong dengan "N/A" sebagai representasi nilai yang tidak tersedia.'
 
 
 def test_repeated_column_value_is_not_a_row_duplicate() -> None:
@@ -105,7 +109,6 @@ def test_findings_are_ordered_and_include_deterministic_metadata() -> None:
     ]
     assert all(item.confidence == 1.0 for item in findings)
     assert all(item.detector == "deterministic:structural-v1" for item in findings)
-    assert all(item.status == "OPEN" for item in findings)
     assert all(item.evidence and item.recommendation for item in findings)
     assert parsed.records == original
 

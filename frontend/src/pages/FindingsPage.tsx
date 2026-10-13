@@ -1,10 +1,10 @@
-import { Fragment, useCallback, useDeferredValue, useEffect, useState } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, listGlobalFindings } from "../api";
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ChevronDownIcon, SearchIcon } from "../icons";
 import { formatIssueLabel, type GlobalFindingPage } from "../types";
+import { displayOriginalValue as value, isPotentialIssue } from "../presentation";
 
-const value = (item: unknown) => (item == null ? "—" : typeof item === "object" ? JSON.stringify(item) : String(item));
 
 export default function FindingsPage() {
   const [data, setData] = useState<GlobalFindingPage | null>(null);
@@ -14,15 +14,18 @@ export default function FindingsPage() {
   const [severity, setSeverity] = useState("");
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   const load = useCallback(() => {
+    const sequence = ++requestSequence.current;
     setError(null);
+    setData(null);
     listGlobalFindings({ page, pageSize: 50, search: deferredSearch || undefined, severity: severity || undefined })
-      .then(setData)
-      .catch((reason) => setError(reason instanceof ApiError ? reason : new ApiError("Temuan tidak dapat dimuat.")));
+      .then((result) => { if (sequence === requestSequence.current) setData(result); })
+      .catch((reason) => { if (sequence === requestSequence.current) setError(reason instanceof ApiError ? reason : new ApiError("Temuan tidak dapat dimuat.")); });
   }, [deferredSearch, page, severity]);
 
-  useEffect(load, [load]);
+  useEffect(() => { load(); return () => { requestSequence.current++; }; }, [load]);
   const pages = Math.max(1, Math.ceil((data?.total || 0) / 50));
 
   return (
@@ -31,7 +34,7 @@ export default function FindingsPage() {
         <div>
           <span className="eyebrow">Temuan</span>
           <h1>Temuan lintas dataset</h1>
-          <p>Daftar error bersifat read-only dan diurutkan per assessment lalu baris sumber.</p>
+          <p>Ketidaksesuaian aturan dan potensi anomali, diurutkan per assessment lalu baris sumber.</p>
         </div>
       </div>
       <section className="panel">
@@ -45,6 +48,7 @@ export default function FindingsPage() {
               <span className="sr-only">Cari temuan</span>
               <SearchIcon size={16} />
               <input
+                name="finding-search"
                 value={search}
                 onChange={(event) => {
                   setSearch(event.target.value);
@@ -55,6 +59,7 @@ export default function FindingsPage() {
               />
             </label>
             <select
+              name="finding-severity"
               aria-label="Filter severity"
               value={severity}
               onChange={(event) => {
@@ -92,7 +97,7 @@ export default function FindingsPage() {
               <CheckIcon size={20} />
             </span>
             <h3>Tidak ada temuan</h3>
-            <p>Belum ada error yang cocok dengan filter.</p>
+            <p>Tidak ada temuan yang cocok dengan filter.</p>
           </div>
         ) : (
           <>
@@ -129,11 +134,7 @@ export default function FindingsPage() {
                           </span>
                         </td>
                         <td className="finding-value">
-                          {item.original_value == null ? (
-                            <span className="muted-value">—</span>
-                          ) : (
-                            <code>{value(item.original_value)}</code>
-                          )}
+                          <code>{value(item.original_value)}</code>
                         </td>
                         <td className="finding-value">
                           {item.expected_value == null ? (
@@ -158,12 +159,13 @@ export default function FindingsPage() {
                           <td colSpan={7}>
                             <div>
                               <section>
-                                <span>Evidence</span>
+                                <span>Alasan penandaan</span>
                                 <p>{item.evidence || "—"}</p>
                               </section>
                               <section>
                                 <span>Rekomendasi tindakan</span>
                                 <p>{item.recommendation || "—"}</p>
+                                {isPotentialIssue(item.issue_type) && <p className="potential-issue-note">Nilai yang ditandai belum tentu salah. Konfirmasikan dengan sumber data.</p>}
                               </section>
                             </div>
                           </td>

@@ -36,7 +36,6 @@ class FindingResponse(BaseModel):
     recommendation: str
     confidence: float
     detector: str
-    status: str
 
 
 class FindingSummaryResponse(BaseModel):
@@ -72,16 +71,34 @@ class DatasetDetailResponse(DatasetSummaryResponse):
     findings: list[FindingResponse]
 
 
-class FindingStatusUpdate(BaseModel):
-    status: str
-    reviewer: str = "REVIEWER LOKAL"
+class DatasetPreviewResponse(BaseModel):
+    filename: str
+    worksheet_name: str | None
+    row_count: int
+    column_count: int
+    duplicate_row_count: int
+    rows: list[dict[str, object]]
+    columns: list[ColumnProfileResponse]
+    checks: list[str]
+
+
+class FindingRowGroupResponse(BaseModel):
+    row: int
+    source_record: dict[str, Any] | None = None
+    findings: list[FindingResponse]
+    action_summary: str
+    action_summary_source: str
+    action_summary_confidence: float | None
 
 
 class FindingPageResponse(BaseModel):
     items: list[FindingResponse]
     total: int
+    total_rows: int
     page: int
     page_size: int
+    by_issue_type: dict[str, int]
+    row_groups: list[FindingRowGroupResponse]
 
 
 class GlobalFindingResponse(FindingResponse):
@@ -110,5 +127,5 @@ class DashboardResponse(BaseModel):
     total_assessments: int
     passed_assessments: int
     needs_correction_assessments: int
-    open_findings: int
+    latest_findings: int
     latest_assessment: LatestAssessmentResponse | None

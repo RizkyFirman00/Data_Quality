@@ -108,6 +108,9 @@ Create one column-level `MISSING_VALUE` finding for each of:
 - whitespace-only string.
 
 Preserve the exact original value, including whitespace. Severity is `HIGH`.
+Store `N/A` as the expected value and recommend it as the accepted representation
+for unavailable data. The recommendation remains advisory and does not modify the
+source dataset.
 
 The following are not missing:
 
@@ -129,7 +132,7 @@ The following are not missing:
 - This includes free text and strings that mix letters with numbers, spaces, or punctuation.
 - `N/A` is already uppercase and remains valid.
 - Values without letters are not checked.
-- Create `INVALID_CASE` with severity `MEDIUM`.
+- Create `INVALID_CASE` with severity `HIGH`.
 - Store the uppercase form as the expected value and recommendation, without modifying the source.
 
 ## 6. Ordering and reproducibility

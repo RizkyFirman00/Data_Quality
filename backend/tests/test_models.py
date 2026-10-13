@@ -72,7 +72,9 @@ def test_dataset_findings_are_persisted_and_deleted_together() -> None:
                 recommendation="Gunakan ANI.",
                 confidence=1.0,
                 detector="deterministic:structural-v1",
-                status="OPEN",
+                action_summary="Mengganti nilai menjadi ANI.",
+                action_summary_source="ai",
+                action_summary_confidence=0.93,
             )
         )
         session.add(dataset)
@@ -84,7 +86,9 @@ def test_dataset_findings_are_persisted_and_deleted_together() -> None:
         assert saved is not None
         assert saved.finding_count == 1
         assert saved.findings[0].dataset is saved
-        assert saved.findings[0].status == "OPEN"
+        assert saved.findings[0].action_summary == "Mengganti nilai menjadi ANI."
+        assert saved.findings[0].action_summary_source == "ai"
+        assert saved.findings[0].action_summary_confidence == 0.93
         session.delete(saved)
         session.commit()
         assert session.scalars(select(Finding)).all() == []

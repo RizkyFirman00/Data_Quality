@@ -97,12 +97,6 @@ class ColumnProfile(Base):
 
 class Finding(Base):
     __tablename__ = "findings"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('OPEN', 'REVIEWED', 'ACCEPTED', 'DISMISSED')",
-            name="ck_findings_status",
-        ),
-    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     dataset_id: Mapped[uuid.UUID] = mapped_column(
@@ -119,26 +113,11 @@ class Finding(Base):
     recommendation: Mapped[str] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Float)
     detector: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16), default="OPEN")
+    action_summary: Mapped[str | None] = mapped_column(Text)
+    action_summary_source: Mapped[str | None] = mapped_column(String(16))
+    action_summary_confidence: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     dataset: Mapped[Dataset] = relationship(back_populates="findings")
-    audits: Mapped[list["FindingAudit"]] = relationship(
-        back_populates="finding", cascade="all, delete-orphan", order_by="FindingAudit.created_at"
-    )
-
-
-class FindingAudit(Base):
-    __tablename__ = "finding_audits"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    finding_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("findings.id", ondelete="CASCADE"), index=True
-    )
-    previous_status: Mapped[str] = mapped_column(String(16))
-    status: Mapped[str] = mapped_column(String(16))
-    reviewer: Mapped[str] = mapped_column(String(128), default="REVIEWER LOKAL")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    finding: Mapped[Finding] = relationship(back_populates="audits")
 
 
 class LocalUser(Base):

@@ -23,6 +23,52 @@ class QualityAssessmentError(ValueError):
     pass
 
 
+AVAILABLE_DETERMINISTIC_CHECKS = [
+    "FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE", "ADMINISTRATIVE_REFERENCE",
+    "DATE_FORMAT", "COORDINATE", "NUMERIC_FORMAT", "CALCULATION", "CROSS_FIELD",
+    "STATISTICAL_ANOMALY",
+]
+
+
+def check_execution_metadata(profile: DatasetProfile, executed: list[str]) -> dict[str, object]:
+    relevant = planned_quality_checks(profile, semantic_enabled=False)
+    return {
+        "scope": "deterministic_and_statistical",
+        "available": AVAILABLE_DETERMINISTIC_CHECKS,
+        "relevant": relevant,
+        "executed": executed,
+        "skipped": [
+            {"check": check, "reason": "Karakteristik dataset tidak memenuhi prasyarat pemeriksaan."}
+            for check in AVAILABLE_DETERMINISTIC_CHECKS if check not in relevant
+        ],
+    }
+
+
+def planned_quality_checks(profile: DatasetProfile, *, semantic_enabled: bool) -> list[str]:
+    """Describe only checks that can apply to the profiled dataset."""
+    roles = {column.candidate_role for column in profile.columns}
+    dates = [_date_column_kind(column.display_name, column.candidate_role) for column in profile.columns]
+    numeric = [column for column in profile.columns if column.candidate_role in {"numeric", "percentage"} and not _date_column_kind(column.display_name, column.candidate_role) and not _coordinate_kind(column.display_name, column.candidate_role)]
+    checks = ["FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE"]
+    if any(role.startswith("administrative_") for role in roles):
+        checks.append("ADMINISTRATIVE_REFERENCE")
+    if any(dates):
+        checks.append("DATE_FORMAT")
+    if numeric:
+        checks.append("NUMERIC_FORMAT")
+    if any(column.candidate_role == "numeric" for column in numeric) and profile.row_count >= 8:
+        checks.append("STATISTICAL_ANOMALY")
+    if roles & {"latitude", "longitude"}:
+        checks.append("COORDINATE")
+    if len(numeric) >= 3:
+        checks.append("CALCULATION")
+    if dates.count("date") >= 2:
+        checks.append("CROSS_FIELD")
+    if semantic_enabled and any(column.candidate_role in {"text", "free_text", "categorical"} and _date_column_kind(column.display_name, column.candidate_role) is None and administrative_column(column.display_name) is None for column in profile.columns):
+        checks.append("SEMANTIC_TYPO")
+    return checks
+
+
 def _finding_limit_error(max_findings: int) -> QualityAssessmentError:
     return QualityAssessmentError(
         f"Dataset menghasilkan lebih dari {max_findings} temuan kualitas. "
@@ -42,7 +88,9 @@ class FindingResult:
     recommendation: str
     confidence: float = 1.0
     detector: str = "deterministic:structural-v1"
-    status: str = "OPEN"
+    action_summary: str | None = None
+    action_summary_source: str | None = None
+    action_summary_confidence: float | None = None
 
 
 ISSUE_ORDER = {
@@ -101,7 +149,7 @@ def structural_findings(
                     original_value={name: json_value(value) for name, value in record.items()},
                     expected_value=None,
                     evidence=f"Seluruh nilai sama dengan baris {first_row}.",
-                    recommendation="Verifikasi apakah baris berulang ini perlu dipertahankan.",
+                    recommendation="Memverifikasi apakah baris berulang ini perlu dipertahankan.",
                 )
             )
         else:
@@ -117,9 +165,9 @@ def structural_findings(
                         issue_type="MISSING_VALUE",
                         severity="HIGH",
                         original_value=value,
-                        expected_value=None,
+                        expected_value="N/A",
                         evidence="Nilai kosong atau tidak tersedia.",
-                        recommendation="Lengkapi nilai sesuai sumber data OPD.",
+                        recommendation='Mengganti nilai kosong dengan "N/A" sebagai representasi nilai yang tidak tersedia.',
                     )
                 )
             elif value == "-":
@@ -132,7 +180,7 @@ def structural_findings(
                         original_value=value,
                         expected_value=None,
                         evidence='Tanda "-" bukan representasi missing yang diterima.',
-                        recommendation="Gunakan representasi yang sesuai dengan standar kolom.",
+                        recommendation='Mengganti tanda "-" dengan representasi yang sesuai dengan standar kolom.',
                     )
                 )
             elif isinstance(value, str) and any(character.isalpha() for character in value) and value != value.upper():
@@ -142,11 +190,11 @@ def structural_findings(
                         row=source_row,
                         column=column.display_name,
                         issue_type="INVALID_CASE",
-                        severity="MEDIUM",
+                        severity="HIGH",
                         original_value=value,
                         expected_value=expected,
                         evidence="Nilai mengandung huruf yang belum seluruhnya uppercase.",
-                        recommendation=f"Gunakan {expected} jika sesuai dengan sumber OPD.",
+                        recommendation=f"Mengganti nilai menjadi {expected} jika sesuai dengan sumber OPD.",
                     )
                 )
 
@@ -252,7 +300,7 @@ def coordinate_findings(
                     original_value=json_value(value),
                     expected_value=expected,
                     evidence=evidence,
-                    recommendation=f"Gunakan {expected} setelah memverifikasi sumber OPD.",
+                    recommendation=f"Menggunakan {expected} setelah memverifikasi sumber OPD.",
                     detector="deterministic:coordinate-v1",
                 )
             )
@@ -272,7 +320,7 @@ def date_findings(
         findings.append(finding)
 
     required_date = "YYYYMMDD atau YYYYMMDD S.D. YYYYMMDD"
-    required_period = "YYYY atau YYYYMM"
+    required_period = "YYYY, YYYYMM, YYYY-T1–T4 atau YYYY-S1–S2"
 
     def parsed_date(text: str) -> date | None:
         if not re.fullmatch(r"[0-9]{8}", text):
@@ -295,13 +343,13 @@ def date_findings(
                 continue
             text = str(value)
             expected = required_period if is_period else required_date
-            evidence = "Nilai periode data harus menggunakan format YYYY atau YYYYMM."
+            evidence = "Periode data harus berupa tahun, bulan, triwulan (T1–T4), atau semester (S1–S2)."
             if is_period:
                 if (
                     not isinstance(value, (bool, float, date))
-                    and re.fullmatch(r"[0-9]{4}(?:[0-9]{2})?", text)
+                    and re.fullmatch(r"[0-9]{4}(?:[0-9]{2}|-T[1-4]|-S[1-2])?", text)
                     and 1 <= int(text[:4]) <= 9999
-                    and (len(text) == 4 or 1 <= int(text[4:]) <= 12)
+                    and (len(text) == 4 or text[4] == "-" or 1 <= int(text[4:]) <= 12)
                 ):
                     continue
             else:
@@ -354,7 +402,7 @@ def date_findings(
                     original_value=json_value(value),
                     expected_value=expected,
                     evidence=evidence,
-                    recommendation=f"Gunakan {expected} setelah memverifikasi sumber OPD.",
+                    recommendation=f"Menggunakan {expected} setelah memverifikasi sumber OPD.",
                     detector="deterministic:date-v1",
                 )
             )
@@ -408,7 +456,7 @@ def numeric_findings(
                     expected_value=expected,
                     evidence="Nilai pada kolom numerik tidak menggunakan format angka kanonis.",
                     recommendation=(
-                        "Gunakan angka ASCII dengan titik desimal setelah "
+                        "Menggunakan angka ASCII dengan titik desimal setelah "
                         "memverifikasi sumber OPD."
                     ),
                     detector="deterministic:numeric-v1",
@@ -520,7 +568,7 @@ def calculation_findings(
                         f"Mayoritas baris mengikuti {result.display_name} = "
                         f"{numerator_name} / {denominator_name} × 100."
                     ),
-                    recommendation=f"Verifikasi nilai {expected_value} terhadap sumber OPD.",
+                    recommendation=f"Memverifikasi nilai {expected_value} terhadap sumber OPD.",
                     confidence=confidence,
                     detector="deterministic:calculation-v1",
                 )
@@ -564,7 +612,7 @@ def calculation_findings(
                         f"Mayoritas baris mengikuti {result.display_name} = "
                         f"{left_name} + {right_name}."
                     ),
-                    recommendation=f"Verifikasi nilai {expected_value} terhadap sumber OPD.",
+                    recommendation=f"Memverifikasi nilai {expected_value} terhadap sumber OPD.",
                     confidence=confidence,
                     detector="deterministic:calculation-v1",
                 )
@@ -635,7 +683,7 @@ def cross_field_findings(
                     "pada baris yang sama."
                 ),
                 recommendation=(
-                    f"Gunakan tanggal minimal {start_text} setelah memverifikasi sumber OPD."
+                    f"Menggunakan tanggal minimal {start_text} setelah memverifikasi sumber OPD."
                 ),
                 detector="deterministic:cross-field-v1",
             )
@@ -648,22 +696,13 @@ def statistical_findings(
     profile: DatasetProfile,
     max_findings: int = 10_000,
 ) -> list[FindingResult]:
-    """Report IQR outliers in profiled numeric columns as reviewer evidence."""
+    """Report IQR outliers in profiled numeric columns as review evidence."""
     findings: list[FindingResult] = []
 
     def add(finding: FindingResult) -> None:
         if len(findings) >= max_findings:
             raise _finding_limit_error(max_findings)
         findings.append(finding)
-
-    def number(value: object) -> float | None:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, (int, float)):
-            return float(value) if math.isfinite(value) else None
-        if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", value):
-            return float(value)
-        return None
 
     for column, column_profile in zip(parsed.columns, profile.columns, strict=True):
         if column_profile.candidate_role != "numeric" or _date_column_kind(
@@ -674,7 +713,7 @@ def statistical_findings(
             (source_row, value, parsed_number)
             for record, source_row in zip(parsed.records, parsed.source_rows, strict=True)
             if (value := record.get(column.key)) is not None
-            if (parsed_number := number(value)) is not None
+            if (parsed_number := _number(value)) is not None
         ]
         if len(values) < 8:
             continue
@@ -687,7 +726,9 @@ def statistical_findings(
         iqr = q3 - q1
         if iqr == 0:
             continue
-        minimum, maximum = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        minimum, maximum = q1 - Decimal("1.5") * iqr, q3 + Decimal("1.5") * iqr
+        if not all(bound.is_finite() for bound in (minimum, maximum)):
+            continue
         for source_row, value, parsed_number in values:
             if minimum <= parsed_number <= maximum:
                 continue
@@ -700,10 +741,10 @@ def statistical_findings(
                     original_value=json_value(value),
                     expected_value=None,
                     evidence=(
-                        f"Nilai {parsed_number:g} berada di luar rentang IQR "
-                        f"{minimum:g}–{maximum:g}."
+                        f"Nilai {_display_number(parsed_number)} berada di luar rentang IQR "
+                        f"{_display_number(minimum)}–{_display_number(maximum)}."
                     ),
-                    recommendation="Verifikasi nilai ekstrem ini terhadap sumber OPD.",
+                    recommendation="Memverifikasi nilai ekstrem ini terhadap sumber OPD.",
                     confidence=0.8,
                     detector="deterministic:iqr-v1",
                 )
@@ -831,9 +872,9 @@ def reference_findings(
                             else f"Nilai tidak ditemukan pada referensi {label} versi {reference.sha256[:12]}."
                         ),
                         recommendation=(
-                            f"Gunakan {candidate.unit.name} hanya setelah verifikasi reviewer."
+                            f"Menggunakan {candidate.unit.name} hanya setelah verifikasi pengguna."
                             if candidate
-                            else f"Verifikasi nilai terhadap master {label} DKI Jakarta."
+                            else f"Memverifikasi nilai terhadap master {label} DKI Jakarta."
                         ),
                         confidence=candidate.confidence if candidate else 1.0,
                         detector=(
@@ -864,7 +905,7 @@ def reference_findings(
                             f"entitas {level_labels[level]} yang sama dengan nilai "
                             f"{previous[0]} pada kolom {previous[2]}."
                         ),
-                        recommendation="Verifikasi konsistensi kode dan nama administratif pada baris ini.",
+                        recommendation="Memverifikasi konsistensi kode dan nama administratif pada baris ini.",
                         detector=detector,
                     )
                 )
@@ -894,7 +935,7 @@ def reference_findings(
                         else expected_code
                     ),
                     evidence=f"{child[0]} tidak berada di bawah {parent[0]} pada master administratif.",
-                    recommendation="Verifikasi hubungan hierarki administratif pada baris ini.",
+                    recommendation="Memverifikasi hubungan hierarki administratif pada baris ini.",
                     detector=detector,
                 )
             )
@@ -912,77 +953,29 @@ def quality_findings(
     profile: DatasetProfile,
     reference: AdministrativeReference,
     max_findings: int = 10_000,
+    *,
+    executed_checks: list[str] | None = None,
 ) -> list[FindingResult]:
-    structural = structural_findings(parsed, max_findings)
+    relevant = set(planned_quality_checks(profile, semantic_enabled=False))
+    findings = structural_findings(parsed, max_findings)
+    if executed_checks is not None:
+        executed_checks.extend(["FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE"])
+    detectors: list[tuple[str, Callable[[int], list[FindingResult]]]] = [
+        ("ADMINISTRATIVE_REFERENCE", lambda limit: reference_findings(parsed, reference, limit)),
+        ("DATE_FORMAT", lambda limit: date_findings(parsed, profile, limit)),
+        ("COORDINATE", lambda limit: coordinate_findings(parsed, profile, limit)),
+        ("NUMERIC_FORMAT", lambda limit: numeric_findings(parsed, profile, limit)),
+        ("CALCULATION", lambda limit: calculation_findings(parsed, profile, limit)),
+        ("CROSS_FIELD", lambda limit: cross_field_findings(parsed, profile, limit)),
+        ("STATISTICAL_ANOMALY", lambda limit: statistical_findings(parsed, profile, limit)),
+    ]
     try:
-        reference_results = reference_findings(
-            parsed, reference, max_findings - len(structural)
-        )
-        date_results = date_findings(
-            parsed,
-            profile,
-            max_findings - len(structural) - len(reference_results),
-        )
-        coordinate_results = coordinate_findings(
-            parsed,
-            profile,
-            max_findings
-            - len(structural)
-            - len(reference_results)
-            - len(date_results),
-        )
-        numeric_results = numeric_findings(
-            parsed,
-            profile,
-            max_findings
-            - len(structural)
-            - len(reference_results)
-            - len(date_results)
-            - len(coordinate_results),
-        )
-        calculation_results = calculation_findings(
-            parsed,
-            profile,
-            max_findings
-            - len(structural)
-            - len(reference_results)
-            - len(date_results)
-            - len(coordinate_results)
-            - len(numeric_results),
-        )
-        cross_field_results = cross_field_findings(
-            parsed,
-            profile,
-            max_findings
-            - len(structural)
-            - len(reference_results)
-            - len(date_results)
-            - len(coordinate_results)
-            - len(numeric_results)
-            - len(calculation_results),
-        )
-        statistical_results = statistical_findings(
-            parsed,
-            profile,
-            max_findings
-            - len(structural)
-            - len(reference_results)
-            - len(date_results)
-            - len(coordinate_results)
-            - len(numeric_results)
-            - len(calculation_results)
-            - len(cross_field_results),
-        )
+        for check, detector in detectors:
+            if check not in relevant:
+                continue
+            findings.extend(detector(max_findings - len(findings)))
+            if executed_checks is not None:
+                executed_checks.append(check)
     except QualityAssessmentError as exc:
         raise _finding_limit_error(max_findings) from exc
-    return ordered_findings(
-        parsed,
-        structural
-        + reference_results
-        + date_results
-        + coordinate_results
-        + numeric_results
-        + calculation_results
-        + cross_field_results
-        + statistical_results,
-    )
+    return ordered_findings(parsed, findings)

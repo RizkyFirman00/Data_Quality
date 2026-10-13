@@ -178,7 +178,7 @@ def pdf_bytes(dataset: Dataset, findings: list[Finding]) -> bytes:
         canvas.saveState()
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#5F6368"))
-        canvas.drawString(14 * mm, 8 * mm, "Sumber data tidak diubah. Rekomendasi perlu diverifikasi reviewer.")
+        canvas.drawString(14 * mm, 8 * mm, "Sumber data tidak diubah. Rekomendasi perlu diverifikasi pengguna.")
         canvas.drawRightString(landscape(A4)[0] - 14 * mm, 8 * mm, f"Halaman {doc.page}")
         canvas.restoreState()
 

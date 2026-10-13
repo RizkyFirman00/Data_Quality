@@ -6,7 +6,7 @@ export const ISSUE_LABELS: Record<FindingIssueType, string> = {
   DUPLICATE: "Duplikat penuh",
   MISSING_VALUE: "Nilai kosong",
   INVALID_PLACEHOLDER: "Placeholder tidak valid",
-  INVALID_CASE: "Bukan uppercase",
+  INVALID_CASE: "Teks belum uppercase",
   INVALID_REFERENCE: "Referensi wilayah tidak valid",
   INVALID_HIERARCHY: "Hierarki wilayah tidak valid",
   INVALID_DATE_FORMAT: "Format tanggal tidak valid",
@@ -60,6 +60,17 @@ export interface ColumnProfile {
   distribution: { value: unknown; count: number }[] | null;
 }
 
+export interface AssessmentPreview {
+  filename: string;
+  worksheet_name: string | null;
+  row_count: number;
+  column_count: number;
+  duplicate_row_count: number;
+  rows: PreviewRow[];
+  columns: ColumnProfile[];
+  checks: string[];
+}
+
 export interface Finding {
   id: string;
   row: number;
@@ -72,7 +83,6 @@ export interface Finding {
   recommendation: string;
   confidence: number;
   detector: string;
-  status: "OPEN" | "REVIEWED" | "ACCEPTED" | "DISMISSED";
 }
 
 export interface FindingSummary {
@@ -109,8 +119,18 @@ export interface DatasetDetail extends DatasetSummary {
 export interface FindingPage {
   items: Finding[];
   total: number;
+  total_rows: number;
   page: number;
   page_size: number;
+  by_issue_type: Partial<Record<FindingIssueType, number>>;
+  row_groups: {
+    row: number;
+    source_record?: PreviewRow | null;
+    findings: Finding[];
+    action_summary: string;
+    action_summary_source: "ai" | "fallback";
+    action_summary_confidence: number | null;
+  }[];
 }
 
 export interface GlobalFinding extends Finding {
@@ -168,7 +188,7 @@ export interface Dashboard {
   total_assessments: number;
   passed_assessments: number;
   needs_correction_assessments: number;
-  open_findings: number;
+  latest_findings: number;
   latest_assessment: {
     id: string;
     original_filename: string;

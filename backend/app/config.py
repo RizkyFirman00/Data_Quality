@@ -27,6 +27,7 @@ class Settings:
     llm_model: str | None = os.getenv("LLM_MODEL")
     llm_max_candidates: int = int(os.getenv("LLM_MAX_CANDIDATES", "50"))
     llm_max_columns: int = int(os.getenv("LLM_MAX_COLUMNS", "20"))
+    llm_max_action_groups: int = int(os.getenv("LLM_MAX_ACTION_GROUPS", "20"))
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "10"))
     backoffice_api_base_url: str | None = os.getenv("BACKOFFICE_API_BASE_URL")
     backoffice_api_token: str | None = os.getenv("BACKOFFICE_API_TOKEN")

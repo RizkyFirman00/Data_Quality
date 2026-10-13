@@ -76,9 +76,11 @@ def test_invalid_range_representation_can_recommend_exact_form() -> None:
     assert impossible.expected_value == "YYYYMMDD atau YYYYMMDD S.D. YYYYMMDD"
 
 
-def test_periode_data_accepts_only_year_or_year_month() -> None:
+def test_periode_data_accepts_year_month_quarter_and_semester() -> None:
     assert findings([{"periode_data": "2025"}]) == []
     assert findings([{"periode_data": "202501"}]) == []
+    for period in ["2025-T1", "2025-T4", "2025-S1", "2025-S2"]:
+        assert findings([{"periode_data": period}]) == []
 
     invalid = findings(
         [
@@ -86,10 +88,14 @@ def test_periode_data_accepts_only_year_or_year_month() -> None:
             {"periode_data": "202513"},
             {"periode_data": "20250101"},
             {"periode_data": "202501 S.D. 202502"},
+            {"periode_data": "2025-T0"},
+            {"periode_data": "2025-T5"},
+            {"periode_data": "2025-S3"},
+            {"periode_data": "0000-T1"},
         ]
     )
-    assert len(invalid) == 4
-    assert all(item.expected_value == "YYYY atau YYYYMM" for item in invalid)
+    assert len(invalid) == 8
+    assert all(item.expected_value == "YYYY, YYYYMM, YYYY-T1–T4 atau YYYY-S1–S2" for item in invalid)
 
 
 def test_missing_values_are_left_to_structural_checks() -> None:
