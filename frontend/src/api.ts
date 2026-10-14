@@ -52,6 +52,10 @@ export const restoreDatasets = (ids: string[]) => request<{ dataset_ids: string[
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dataset_ids: ids }),
 });
 export const getDataset = (id: string) => request<DatasetDetail>(`/datasets/${id}`);
+export const updateColumnRoles = (id: string, roles: Record<string, string>, expectedRevision: number) => request<DatasetDetail>(`/datasets/${id}/column-roles`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ roles, expected_revision: expectedRevision }),
+});
 export const getConfig = () => request<PublicConfig>("/config");
 export const uploadDataset = (file: File, parentDatasetId?: string) => {
   const data = new FormData();

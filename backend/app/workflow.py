@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .backoffice import fetch_backoffice_dataset
 from .config import Settings, get_settings
+from .column_roles import prepare_column_roles
 from .auth import AuthContext, require_user
 from .dataset_access import dataset_scope
 from .database import get_session
@@ -382,9 +383,11 @@ def assess_backoffice(
         reference = load_administrative_reference(config.master_reference_path)
         semantic = semantic_analysis(parsed, profile, config)
         profile = apply_semantic_roles(profile, semantic.roles)
+        profile, coverage = prepare_column_roles(profile, trusted_columns=semantic.roles)
         executed_checks: list[str] = []
         deterministic = quality_findings(parsed, profile, reference, config.max_findings, executed_checks=executed_checks)
-        results = ordered_findings(parsed, deterministic + semantic.findings)
+        pending_columns = {c.display_name for c in profile.columns if c.candidate_role == "unclassified"}
+        results = ordered_findings(parsed, deterministic + [f for f in semantic.findings if f.column not in pending_columns])
         if len(results) > config.max_findings:
             raise ValueError("Dataset menghasilkan terlalu banyak temuan kualitas.")
         action_summaries = summarize_finding_actions(results, config)
@@ -396,6 +399,9 @@ def assess_backoffice(
         dataset.findings = [Finding(position=index, **item.__dict__) for index, item in enumerate(results)]
         dataset.finding_count = len(results)
         dataset.source_metadata = {
+            "column_assessment": coverage,
+            "column_roles": {},
+            "role_revision": 0,
             "quality_checks": check_execution_metadata(profile, executed_checks),
             "semantic_available": semantic.available,
             "semantic_roles": semantic.roles,

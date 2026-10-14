@@ -53,6 +53,8 @@ def summary_rows(dataset: Dataset, findings: list[Finding]) -> list[list[object]
         ["Worksheet", dataset.worksheet_name or "-"],
         ["Baris", dataset.row_count],
         ["Kolom", dataset.column_count],
+        ["Kolom belum diperiksa penuh", dataset.pending_column_count if dataset.pending_column_count is not None else "Belum tercatat"],
+        ["Batas hasil", "Tidak ada temuan hanya berlaku pada pemeriksaan yang dijalankan."],
         ["Total temuan dalam laporan", len(findings)],
         ["Severity tinggi", severities.get("HIGH", 0)],
         ["Severity medium", severities.get("MEDIUM", 0)],

@@ -1,8 +1,10 @@
 export type DatasetStatus = "PROCESSING" | "COMPLETED" | "FAILED";
-export type FindingIssueType = "DUPLICATE" | "MISSING_VALUE" | "INVALID_PLACEHOLDER" | "INVALID_CASE" | "INVALID_REFERENCE" | "INVALID_HIERARCHY" | "INVALID_DATE_FORMAT" | "INVALID_COORDINATE" | "FORMAT_ERROR" | "CALCULATION_MISMATCH" | "CROSS_FIELD_MISMATCH" | "STATISTICAL_ANOMALY" | "POTENTIAL_TYPO" | "SEMANTIC_MISMATCH";
+export type FindingIssueType = "DUPLICATE" | "MISSING_VALUE" | "INVALID_PLACEHOLDER" | "INVALID_CASE" | "INVALID_REFERENCE" | "INVALID_HIERARCHY" | "INVALID_DATE_FORMAT" | "INVALID_COORDINATE" | "FORMAT_ERROR" | "CALCULATION_MISMATCH" | "CROSS_FIELD_MISMATCH" | "STATISTICAL_ANOMALY" | "POTENTIAL_TYPO" | "SEMANTIC_MISMATCH" | "MISSING_COLUMN_HEADER" | "INVALID_IDENTIFIER_FORMAT";
 export type FindingSeverity = "HIGH" | "MEDIUM";
 
 export const ISSUE_LABELS: Record<FindingIssueType, string> = {
+  MISSING_COLUMN_HEADER: "Kolom tanpa header",
+  INVALID_IDENTIFIER_FORMAT: "Format identifier tidak valid",
   DUPLICATE: "Duplikat penuh",
   MISSING_VALUE: "Nilai kosong",
   INVALID_PLACEHOLDER: "Placeholder tidak valid",
@@ -100,6 +102,7 @@ export interface FindingSummary {
 }
 
 export interface DatasetSummary {
+  pending_column_count?: number | null;
   id: string;
   original_filename: string;
   source_type: string;

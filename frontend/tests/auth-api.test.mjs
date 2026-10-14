@@ -48,3 +48,22 @@ test("dataset pagination and bulk actions use scoped API contracts and CSRF", as
     assert.equal((await api.restoreDatasets(ids)).count, 1);
   } finally { globalThis.fetch = originalFetch; await server.close(); }
 });
+
+test("optional role confirmation sends CSRF and revision without uploading source", async () => {
+  const server = await createServer({ server: { middlewareMode: true }, appType: "custom" });
+  const originalFetch = globalThis.fetch;
+  try {
+    const api = await server.ssrLoadModule("/src/api.ts");
+    globalThis.fetch = async (url, options) => {
+      if (url.endsWith("/auth/me")) return Response.json({ user: {}, csrf_token: "test-csrf" });
+      assert.ok(url.endsWith("/datasets/test-id/column-roles"));
+      assert.equal(options.method, "POST");
+      assert.equal(options.credentials, "include");
+      assert.equal(options.headers.get("x-csrf-token"), "test-csrf");
+      assert.deepEqual(JSON.parse(options.body), { roles: { nilai: "identifier" }, expected_revision: 2 });
+      return Response.json({ id: "test-id" });
+    };
+    await api.getCurrentUser();
+    assert.equal((await api.updateColumnRoles("test-id", { nilai: "identifier" }, 2)).id, "test-id");
+  } finally { globalThis.fetch = originalFetch; await server.close(); }
+});

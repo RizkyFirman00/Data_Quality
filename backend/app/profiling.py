@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from .ingestion import ParsedColumn, ParsedDataset
+from .identifiers import is_identifier_name
 from .normalization import json_key, json_record, json_value
 from .reference import administrative_column
 
@@ -90,7 +91,7 @@ def _role(name: str, inferred_type: str, unique_count: int, value_count: int) ->
         return f"administrative_{administrative[0]}"
     if normalized == "periode_data":
         return "categorical"
-    if normalized in {"id", "nik", "npsn", "uuid"} or normalized.startswith("kode_") or normalized.endswith("_id"):
+    if is_identifier_name(name):
         return "identifier"
     if tokens & {"lintang", "latitude", "lat"}:
         return "latitude"
@@ -132,7 +133,10 @@ def _column_profile(
         display_name=column.display_name,
         position=position,
         inferred_type=inferred_type,
-        candidate_role=_role(column.display_name, inferred_type, len(keyed), len(nonempty)),
+        candidate_role=(
+            _role(column.display_name, inferred_type, len(keyed), len(nonempty))
+            if column.original_name.strip() else "unclassified"
+        ),
         null_count=sum(value is None for value in raw_values),
         empty_count=sum(_empty(value) for value in raw_values),
         unique_count=len(keyed),

@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,12 +11,13 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, get_settings
+from .column_roles import MANUAL_ROLES, prepare_column_roles
 from .auth import AuthContext, require_user
 from .dataset_access import dataset_scope
 from .database import get_session
-from .ingestion import DatasetParseError, parse_dataset
+from .ingestion import DatasetParseError, ParsedColumn, ParsedDataset, parse_dataset
 from .models import ColumnProfile, Dataset, DatasetStatus, Finding
-from .normalization import write_snapshot
+from .normalization import json_key, read_snapshot, write_snapshot
 from .profiling import profile_dataset
 from .quality import (
     QualityAssessmentError,
@@ -32,10 +34,120 @@ from .semantic import (
     semantic_analysis,
     summarize_finding_actions,
 )
-from .storage import delete_storage_key, persist_original
+from .storage import delete_storage_key, persist_original, resolve_storage_key
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 logger = logging.getLogger(__name__)
+
+
+class ColumnRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    roles: dict[str, Literal["auto", "identifier", "numeric", "percentage", "categorical", "free_text", "date", "latitude", "longitude"]] = Field(max_length=1000)
+    expected_revision: int = Field(ge=0)
+
+
+@router.post("/{dataset_id}/column-roles", response_model=DatasetDetailResponse)
+def update_column_roles(
+    dataset_id: uuid.UUID, payload: ColumnRolesRequest,
+    session: Session = Depends(get_session), config: Settings = Depends(get_settings),
+    context: AuthContext = Depends(require_user),
+) -> Dataset:
+    locked = session.scalar(select(Dataset).where(Dataset.id == dataset_id, *dataset_scope(context)).with_for_update())
+    if locked is None:
+        raise HTTPException(status_code=404, detail={"message": "Dataset tidak ditemukan."})
+    dataset = _load_dataset(session, dataset_id, context)
+    metadata = dict(dataset.source_metadata or {})
+    if dataset.status != DatasetStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail={"message": "Hanya assessment selesai yang dapat diperiksa ulang."})
+    if payload.expected_revision != metadata.get("role_revision", 0):
+        raise HTTPException(status_code=409, detail={"message": "Pengaturan sudah berubah. Muat ulang halaman sebelum menyimpan."})
+    try:
+        if dataset.original_file_key:
+            parsed = parse_dataset(
+                resolve_storage_key(config.storage_root, dataset.original_file_key),
+                dataset.original_filename, config.max_upload_mb * 10 * 1024 * 1024,
+                config.max_dataset_rows, config.max_dataset_columns, config.max_dataset_cells,
+            )
+        elif dataset.snapshot_key:
+            rows, total = read_snapshot(config.storage_root, dataset.snapshot_key, page_size=config.max_dataset_rows)
+            if not rows or len(rows) != total:
+                raise DatasetParseError("Snapshot lengkap tidak tersedia.")
+            parsed = ParsedDataset(
+                [ParsedColumn(c.original_name, c.display_name, c.display_name) for c in dataset.column_profiles],
+                [{k: v for k, v in row.items() if k != "_source_row"} for row in rows],
+                [row["_source_row"] for row in rows], dataset.worksheet_name,
+            )
+        else:
+            raise DatasetParseError("Sumber assessment tidak tersedia.")
+        profile = profile_dataset(parsed, config.preview_rows)
+        semantic_roles = metadata.get("semantic_roles", {})
+        semantic_roles = semantic_roles if isinstance(semantic_roles, dict) else {}
+        profile = apply_semantic_roles(profile, semantic_roles)
+        overrides = dict(metadata.get("column_roles", {}))
+        _, automatic = prepare_column_roles(profile, trusted_columns=semantic_roles)
+        editable = {c["column"] for c in automatic["columns"] if c["status"] == "needs_role"} | set(overrides)
+        for name, role in payload.roles.items():
+            if name not in editable:
+                raise HTTPException(status_code=422, detail={"message": "Kolom tidak tersedia untuk konfirmasi role. Header kosong harus diperbaiki di sumber."})
+            if role == "auto":
+                overrides.pop(name, None)
+            elif role in MANUAL_ROLES:
+                overrides[name] = role
+        profile, coverage = prepare_column_roles(profile, overrides, trusted_columns=semantic_roles)
+        changed = {
+            c.display_name for c in profile.columns
+            if next((old.candidate_role for old in dataset.column_profiles if old.display_name == c.display_name), None) != c.candidate_role
+        }
+        reference = load_administrative_reference(config.master_reference_path)
+        executed: list[str] = []
+        results = quality_findings(parsed, profile, reference, config.max_findings, executed_checks=executed)
+        retained_semantic = [f for f in dataset.findings if f.issue_type in {"POTENTIAL_TYPO", "SEMANTIC_MISMATCH"} and f.column not in changed]
+        if len(results) + len(retained_semantic) > config.max_findings:
+            raise QualityAssessmentError("Hasil pemeriksaan melebihi batas temuan.")
+    except HTTPException:
+        raise
+    except (DatasetParseError, QualityAssessmentError, ReferenceDataError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail={"message": "Pemeriksaan ulang tidak dapat diselesaikan; hasil sebelumnya tetap tersimpan."}) from exc
+
+    previous = {
+        json_key([f.row, f.column, f.issue_type, f.original_value]): f
+        for f in dataset.findings
+    }
+    findings = []
+    for result in results:
+        key = json_key([result.row, result.column, result.issue_type, result.original_value])
+        finding = previous.get(key) or Finding()
+        for name, value in result.__dict__.items():
+            setattr(finding, name, value)
+        findings.append(finding)
+    findings.extend(retained_semantic)
+    positions = {c.display_name: index for index, c in enumerate(profile.columns)}
+    findings.sort(key=lambda f: (f.row, positions.get(f.column, -1), f.issue_type))
+    for position, finding in enumerate(findings):
+        finding.position = position
+    dataset.findings = findings
+    stored_columns = {c.display_name: c for c in dataset.column_profiles}
+    updated_columns = []
+    for result in profile.columns:
+        stored = stored_columns.get(result.display_name) or ColumnProfile()
+        for name, value in result.__dict__.items():
+            setattr(stored, name, value)
+        updated_columns.append(stored)
+    dataset.column_profiles = updated_columns
+    dataset.preview = profile.preview
+    dataset.row_count, dataset.column_count = profile.row_count, profile.column_count
+    dataset.finding_count = len(findings)
+    dataset.assessment_status = "NEEDS_CORRECTION" if any(f.severity == "HIGH" for f in findings) else "PASSED"
+    dataset.source_metadata = {
+        **metadata, "column_roles": overrides, "column_assessment": coverage,
+        "role_revision": payload.expected_revision + 1,
+        "quality_checks": check_execution_metadata(profile, executed),
+        "role_checks_updated_at": datetime.now(timezone.utc).isoformat(),
+        "semantic_recheck": "not_run", "action_summary_available": False,
+        "action_summary_ai_count": 0, "action_summary_fallback_count": 0,
+    }
+    session.commit()
+    return _load_dataset(session, dataset_id, context)
 
 
 def _load_dataset(session: Session, dataset_id: uuid.UUID, context: AuthContext) -> Dataset:
@@ -180,12 +292,14 @@ async def upload_dataset(
         )
         semantic = await run_in_threadpool(semantic_analysis, parsed, profile, config)
         profile = apply_semantic_roles(profile, semantic.roles)
+        profile, coverage = prepare_column_roles(profile, trusted_columns=semantic.roles)
         executed_checks: list[str] = []
         finding_results = await run_in_threadpool(
             quality_findings, parsed, profile, reference, config.max_findings,
             executed_checks=executed_checks,
         )
-        finding_results = ordered_findings(parsed, finding_results + semantic.findings)
+        pending_columns = {c.display_name for c in profile.columns if c.candidate_role == "unclassified"}
+        finding_results = ordered_findings(parsed, finding_results + [f for f in semantic.findings if f.column not in pending_columns])
         if len(finding_results) > config.max_findings:
             raise QualityAssessmentError("Dataset menghasilkan terlalu banyak temuan kualitas.")
         action_summaries = await run_in_threadpool(
@@ -204,6 +318,9 @@ async def upload_dataset(
         ]
         dataset.finding_count = len(finding_results)
         dataset.source_metadata = {
+            "column_assessment": coverage,
+            "column_roles": {},
+            "role_revision": 0,
             "quality_checks": check_execution_metadata(profile, executed_checks),
             "semantic_available": semantic.available,
             "semantic_roles": semantic.roles,

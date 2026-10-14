@@ -6,6 +6,8 @@ import type { AssessmentPreview, DatasetSummary } from "../types";
 import { displayOriginalValue as displayValue } from "../presentation";
 
 const CHECK_LABELS: Record<string, string> = {
+  COLUMN_STRUCTURE: "Header dan struktur kolom",
+  IDENTIFIER_FORMAT: "Format identifier NIK/KK",
   FULL_ROW_DUPLICATE: "Duplikat baris penuh",
   MISSING_VALUE: "Nilai kosong dan placeholder",
   UPPERCASE: "Standar huruf uppercase",
@@ -20,6 +22,7 @@ const CHECK_LABELS: Record<string, string> = {
 };
 
 const ROLE_LABELS: Record<string, string> = {
+  unclassified: "Belum terklasifikasi (tanpa header)",
   text: "Teks",
   free_text: "Teks bebas",
   categorical: "Kategorikal",

@@ -35,7 +35,7 @@ def _columns(headers: list[object], max_columns: int) -> list[ParsedColumn]:
     if len(nonempty) != len(set(nonempty)):
         raise DatasetParseError("Nama kolom duplikat tidak didukung.")
     columns = [
-        ParsedColumn(name, name or f"Kolom {index + 1}", name or f"Kolom {index + 1}")
+        ParsedColumn(name, name if name.strip() else f"Kolom {index + 1}", name if name.strip() else f"Kolom {index + 1}")
         for index, name in enumerate(names)
     ]
     keys = [column.key for column in columns]
@@ -46,6 +46,30 @@ def _columns(headers: list[object], max_columns: int) -> list[ParsedColumn]:
     if len(keys) != len(set(keys)):
         raise DatasetParseError("Nama kolom efektif ambigu setelah header kosong diberi nama.")
     return columns
+
+
+def _working_dataset(
+    columns: list[ParsedColumn], records: list[dict[str, object]],
+    source_rows: list[int], worksheet_name: str | None = None,
+    formula_columns: set[str] | None = None,
+) -> ParsedDataset:
+    protected = formula_columns or set()
+    retained = [
+        column for column in columns
+        if column.original_name.strip() or column.key in protected
+        or any(
+            (value := record.get(column.key)) is not None
+            and not (isinstance(value, str) and not value.strip())
+            for record in records
+        )
+    ]
+    if len(retained) == len(columns):
+        return ParsedDataset(columns, records, source_rows, worksheet_name)
+    return ParsedDataset(
+        retained,
+        [{column.key: record[column.key] for column in retained} for record in records],
+        source_rows, worksheet_name,
+    )
 
 
 def _decode_csv(path: Path) -> str:
@@ -105,7 +129,7 @@ def _parse_csv(
         raise DatasetParseError("CSV harus memiliki header dan minimal satu baris data.")
     if not records:
         raise DatasetParseError("CSV tidak memiliki baris data.")
-    return ParsedDataset(columns, records, source_rows)
+    return _working_dataset(columns, records, source_rows)
 
 
 def _parse_xlsx(
@@ -139,6 +163,7 @@ def _parse_xlsx(
             columns: list[ParsedColumn] | None = None
             records: list[dict[str, object]] = []
             source_rows: list[int] = []
+            formula_columns: set[str] = set()
             rows = zip(
                 sheet.iter_rows(values_only=True),
                 formula_sheet.iter_rows(),
@@ -151,6 +176,10 @@ def _parse_xlsx(
                     columns = _columns(list(row), max_columns)
                     continue
                 has_formula = any(cell.data_type == "f" for cell in formula_row)
+                formula_columns.update(
+                    column.key for column, cell in zip(columns, formula_row, strict=True)
+                    if cell.data_type == "f"
+                )
                 if not any(value is not None for value in row) and not has_formula:
                     continue
                 if len(records) >= max_rows:
@@ -180,7 +209,7 @@ def _parse_xlsx(
                 continue
             if not records:
                 raise DatasetParseError("Worksheet harus memiliki minimal satu baris data.")
-            return ParsedDataset(columns, records, source_rows, sheet.title)
+            return _working_dataset(columns, records, source_rows, sheet.title, formula_columns)
     finally:
         workbook.close()
         formula_workbook.close()
@@ -237,7 +266,7 @@ def _parse_xls(
                 continue
             if not records:
                 raise DatasetParseError("Worksheet harus memiliki minimal satu baris data.")
-            return ParsedDataset(columns, records, source_rows, sheet.name)
+            return _working_dataset(columns, records, source_rows, sheet.name)
     finally:
         workbook.release_resources()
     raise DatasetParseError("Workbook tidak memiliki worksheet berisi data.")

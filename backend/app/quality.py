@@ -9,6 +9,7 @@ from itertools import combinations, permutations
 from typing import Mapping
 
 from .ingestion import ParsedColumn, ParsedDataset
+from .identifiers import identifier_digit_length, is_identifier_name
 from .normalization import json_key, json_value
 from .profiling import DatasetProfile
 from .reference import (
@@ -26,7 +27,7 @@ class QualityAssessmentError(ValueError):
 AVAILABLE_DETERMINISTIC_CHECKS = [
     "FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE", "ADMINISTRATIVE_REFERENCE",
     "DATE_FORMAT", "COORDINATE", "NUMERIC_FORMAT", "CALCULATION", "CROSS_FIELD",
-    "STATISTICAL_ANOMALY",
+    "STATISTICAL_ANOMALY", "COLUMN_STRUCTURE", "IDENTIFIER_FORMAT",
 ]
 
 
@@ -50,6 +51,10 @@ def planned_quality_checks(profile: DatasetProfile, *, semantic_enabled: bool) -
     dates = [_date_column_kind(column.display_name, column.candidate_role) for column in profile.columns]
     numeric = [column for column in profile.columns if column.candidate_role in {"numeric", "percentage"} and not _date_column_kind(column.display_name, column.candidate_role) and not _coordinate_kind(column.display_name, column.candidate_role)]
     checks = ["FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE"]
+    if any(not column.original_name.strip() for column in profile.columns):
+        checks.append("COLUMN_STRUCTURE")
+    if any(identifier_digit_length(column.display_name) for column in profile.columns):
+        checks.append("IDENTIFIER_FORMAT")
     if any(role.startswith("administrative_") for role in roles):
         checks.append("ADMINISTRATIVE_REFERENCE")
     if any(dates):
@@ -108,6 +113,8 @@ ISSUE_ORDER = {
     "STATISTICAL_ANOMALY": 11,
     "POTENTIAL_TYPO": 12,
     "SEMANTIC_MISMATCH": 13,
+    "MISSING_COLUMN_HEADER": 14,
+    "INVALID_IDENTIFIER_FORMAT": 15,
 }
 
 
@@ -126,7 +133,9 @@ def ordered_findings(
 
 
 def structural_findings(
-    parsed: ParsedDataset, max_findings: int = 10_000
+    parsed: ParsedDataset, max_findings: int = 10_000, *,
+    identifier_columns: set[str] | None = None,
+    deferred_columns: set[str] | None = None,
 ) -> list[FindingResult]:
     findings: list[FindingResult] = []
 
@@ -136,6 +145,28 @@ def structural_findings(
         findings.append(finding)
 
     first_rows: dict[str, int] = {}
+    for column in parsed.columns:
+        if column.original_name.strip():
+            continue
+        row, value = next(
+            (
+                (source_row, record.get(column.key))
+                for record, source_row in zip(parsed.records, parsed.source_rows, strict=True)
+                if record.get(column.key) is not None
+            ),
+            (parsed.source_rows[0], None),
+        )
+        populated = sum(
+            record.get(column.key) is not None
+            and not (isinstance(record.get(column.key), str) and not record[column.key].strip())
+            for record in parsed.records
+        )
+        add(FindingResult(
+            row=row, column=column.display_name, issue_type="MISSING_COLUMN_HEADER",
+            severity="HIGH", original_value=json_value(value), expected_value=None,
+            evidence=f"Kolom sumber tidak memiliki header; {populated} baris memiliki nilai terbaca. Isi kolom tetap dipertahankan, pemeriksaan per-sel ditunda sampai maknanya jelas.",
+            recommendation="Memeriksa apakah kolom ini bagian dataset. Beri header yang sesuai, atau hapus kolom pada salinan sumber jika tidak sengaja tertinggal.",
+        ))
     for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
         key = json_key(record)
         if key in first_rows:
@@ -156,6 +187,8 @@ def structural_findings(
             first_rows[key] = source_row
 
         for column in parsed.columns:
+            if not column.original_name.strip():
+                continue
             value = record.get(column.key)
             if value is None or isinstance(value, str) and not value.strip():
                 add(
@@ -183,7 +216,7 @@ def structural_findings(
                         recommendation='Mengganti tanda "-" dengan representasi yang sesuai dengan standar kolom.',
                     )
                 )
-            elif isinstance(value, str) and any(character.isalpha() for character in value) and value != value.upper():
+            elif column.display_name not in (identifier_columns or set()) and column.display_name not in (deferred_columns or set()) and not is_identifier_name(column.display_name) and isinstance(value, str) and any(character.isalpha() for character in value) and value != value.upper():
                 expected = value.upper()
                 add(
                     FindingResult(
@@ -198,6 +231,33 @@ def structural_findings(
                     )
                 )
 
+    return ordered_findings(parsed, findings)
+
+
+def identifier_findings(
+    parsed: ParsedDataset, max_findings: int = 10_000,
+) -> list[FindingResult]:
+    findings: list[FindingResult] = []
+    for column in parsed.columns:
+        length = identifier_digit_length(column.display_name)
+        if not column.original_name.strip() or length is None:
+            continue
+        for record, source_row in zip(parsed.records, parsed.source_rows, strict=True):
+            value = record.get(column.key)
+            if value is None or isinstance(value, str) and (not value.strip() or value in {"-", "N/A"}):
+                continue
+            if not isinstance(value, bool) and isinstance(value, (str, int)) and re.fullmatch(rf"[0-9]{{{length}}}", str(value)):
+                continue
+            if len(findings) >= max_findings:
+                raise _finding_limit_error(max_findings)
+            findings.append(FindingResult(
+                row=source_row, column=column.display_name,
+                issue_type="INVALID_IDENTIFIER_FORMAT", severity="HIGH",
+                original_value=json_value(value), expected_value=None,
+                evidence=f"Identifier pada kolom {column.display_name} wajib berisi tepat {length} digit angka; nilai sumber tidak memenuhi pola tersebut.",
+                recommendation=f"Memverifikasi identifier {length} digit terhadap sumber. Simpan sebagai teks untuk mempertahankan digit awal; jangan menambah, memotong, atau mengganti digit tanpa verifikasi.",
+                detector="deterministic:identifier-v1",
+            ))
     return ordered_findings(parsed, findings)
 
 
@@ -957,10 +1017,17 @@ def quality_findings(
     executed_checks: list[str] | None = None,
 ) -> list[FindingResult]:
     relevant = set(planned_quality_checks(profile, semantic_enabled=False))
-    findings = structural_findings(parsed, max_findings)
+    findings = structural_findings(
+        parsed, max_findings,
+        identifier_columns={c.display_name for c in profile.columns if c.candidate_role == "identifier"},
+        deferred_columns={c.display_name for c in profile.columns if c.candidate_role == "unclassified"},
+    )
     if executed_checks is not None:
         executed_checks.extend(["FULL_ROW_DUPLICATE", "MISSING_VALUE", "UPPERCASE"])
+        if "COLUMN_STRUCTURE" in relevant:
+            executed_checks.append("COLUMN_STRUCTURE")
     detectors: list[tuple[str, Callable[[int], list[FindingResult]]]] = [
+        ("IDENTIFIER_FORMAT", lambda limit: identifier_findings(parsed, limit)),
         ("ADMINISTRATIVE_REFERENCE", lambda limit: reference_findings(parsed, reference, limit)),
         ("DATE_FORMAT", lambda limit: date_findings(parsed, profile, limit)),
         ("COORDINATE", lambda limit: coordinate_findings(parsed, profile, limit)),

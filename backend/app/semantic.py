@@ -255,7 +255,10 @@ def apply_semantic_roles(profile: DatasetProfile, roles: dict[str, str]) -> Data
     return replace(
         profile,
         columns=[
-            replace(column, candidate_role=roles.get(column.display_name, column.candidate_role))
+            replace(column, candidate_role=(
+                column.candidate_role if column.candidate_role == "identifier" or not column.original_name.strip()
+                else roles.get(column.display_name, column.candidate_role)
+            ))
             for column in profile.columns
         ],
     )

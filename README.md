@@ -9,7 +9,7 @@ Aplikasi memberi status assessment berdasarkan temuan severity tinggi, tetapi ti
 - Duplikat hanya untuk baris lengkap yang sama; kemunculan pertama menjadi referensi.
 - `NULL`, string kosong, dan whitespace-only adalah `MISSING_VALUE`; nilai yang direkomendasikan adalah `N/A`.
 - String `-` adalah `INVALID_PLACEHOLDER`.
-- Semua nilai string yang mengandung huruf harus uppercase; pelanggaran menjadi temuan severity tinggi dan rekomendasi tidak diterapkan otomatis.
+- Nilai teks mengikuti uppercase, kecuali identifier yang dapat peka terhadap kapitalisasi seperti nomor SK/izin. Pelanggaran menjadi temuan severity tinggi dan rekomendasi tidak diterapkan otomatis.
 - `N/A`, angka `0`, dan string `"0"` tetap valid dan bukan missing.
 - Kolom administratif yang dikenali secara eksplisit divalidasi terhadap `backend/reference/master.csv`: 267 kelurahan, 44 kecamatan, dan 6 kota/kabupaten.
 - Header `wilayah` dipetakan khusus ke kota/kabupaten. Nama dibandingkan secara uppercase tanpa mengubah nilai sumber; kode dibandingkan sebagai string persis.
@@ -21,7 +21,13 @@ Aplikasi memberi status assessment berdasarkan temuan severity tinggi, tetapi ti
 - Semua digit format tanggal/periode wajib digit ASCII `0`–`9`. Digit Arab-Indic dan fullwidth ditolak.
 - Sel XLSX whole-number dapat memenuhi format digit. Boolean, float, serta sel native date/datetime tetap menghasilkan temuan; native date/datetime mendapat rekomendasi `YYYYMMDD` yang JSON-safe.
 - Nilai missing, whitespace-only, `-`, dan `N/A` dilewati oleh pemeriksaan tanggal agar tidak menduplikasi temuan struktural.
-- Hanya kolom dengan minimal 90% evidence numerik pada profil yang diperiksa sebagai numerik; nama header tidak dipakai untuk menebak artinya.
+- Tipe penyimpanan dan role dibedakan: NIK/KK, ID, kode, RT/RW, serta header nomor/no dikenali sebagai identifier, bukan ukuran numerik. Identifier tidak masuk IQR atau kalkulasi; nilai yang unik saja tidak cukup untuk menetapkan role identifier.
+- NIK/KK diperiksa sebagai tepat 16 digit ASCII. Angka integer yang tersimpan dapat diperiksa, tetapi float, scientific notation, karakter selain digit, dan panjang yang salah ditandai tanpa menebak digit pengganti. N/A tetap diterima; nilai kosong/placeholder ditangani pemeriksaan struktural. KK berulang bukan kesalahan kecuali seluruh baris duplikat.
+- Pola nomor SK/izin dan identifier lain tidak dibuat tanpa aturan yang tersedia. Role kolom ambigu dapat dikonfirmasi opsional dari halaman hasil; pengaturan pola identifier khusus belum tersedia.
+- Kolom tanpa header yang sepenuhnya kosong diabaikan hanya pada data kerja. Kolom tanpa header yang memiliki nilai/formula tetap dipertahankan dan menghasilkan satu `MISSING_COLUMN_HEADER`, bukan temuan missing per record. Kolom bernama yang kosong tetap diperiksa. Pada XLSX, formula dilindungi meskipun hasil cache kosong; XLS hanya menyediakan hasil formula tersimpan, sehingga formula dengan hasil kosong tidak dapat dibedakan dari sel kosong oleh pembaca saat ini.
+- Kolom ukuran numerik dengan evidence yang cukup (minimal 90% pada inferensi tipe) tetap diperiksa sesuai role; pengecualian identifier mendahului pemilihan pemeriksaan numerik.
+- Hasil assessment langsung tersedia tanpa konfirmasi wajib. Kolom numerik dengan makna ambigu dan header generik seperti `nilai`/`data` hanya menjalani pemeriksaan dasar sampai role cukup jelas. Metadata `column_assessment` mencatat cakupan dan alasan penundaan; kolom tanpa header memerlukan perbaikan sumber, bukan sekadar pengaturan role.
+- `POST /api/datasets/{id}/column-roles` menyimpan role yang dikonfirmasi dan memeriksa ulang detektor deterministik yang relevan dari sumber tersimpan. Akses mengikuti pemilik/Admin, CSRF, dan revision guard. File sumber/snapshot tidak diubah; ID temuan yang sama dipertahankan. LLM tidak dipanggil ulang, dan temuan semantik pada kolom yang berubah role tidak dipertahankan sebagai hasil terkini.
 - Format numerik kanonis memakai digit ASCII, tanda opsional, dan titik desimal: `0`, `-12`, `+0.5`, dan `1.000` valid. Titik selalu berarti desimal; seribu ditulis `1000`.
 - Koma desimal/ribuan, scientific notation, simbol mata uang, boolean, `NaN`, infinity, serta digit Unicode menghasilkan `FORMAT_ERROR`. Nilai XLSX bertipe Number tetap valid.
 

@@ -69,6 +69,11 @@ class Dataset(Base):
     parent_dataset: Mapped["Dataset | None"] = relationship(remote_side="Dataset.id")
 
     @property
+    def pending_column_count(self) -> int | None:
+        coverage = (self.source_metadata or {}).get("column_assessment")
+        return coverage.get("pending_count") if isinstance(coverage, dict) else None
+
+    @property
     def owner_display_name(self) -> str | None:
         return self.owner.display_name if self.owner else None
 
